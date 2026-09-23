@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Status pill shown while Wakey acts on screen; %1$s is the current action, e.g. "Tapping “Bluetooth”". -->
+    <string name="overlay_status">Wakey: %1$s</string>
+    <string name="overlay_stop">Stop</string>
+    <string name="overlay_stop_description">Stop what Wakey is doing</string>
+</resources>
