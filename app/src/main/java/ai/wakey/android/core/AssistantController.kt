@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -97,11 +98,8 @@ class AssistantController(
                     }
                 }
         }
-        scope.launch {
-            state.map { NotificationKey(it.phase, it.currentAction?.description, it.wakeServiceRunning) }
-                .distinctUntilChanged()
-                .collect { if (it.running) notifications.updateListening(_state.value) }
-        }
+        // WakeService itself mirrors state into its notification; it reports start failures here.
+        scope.launch { WakeService.startProblem.filterNotNull().collect { setStatus(it, error = true) } }
     }
 
     // ------------------------------------------------------------------ wake service lifecycle
@@ -546,8 +544,6 @@ class AssistantController(
         FastCommand.GoHome -> "Going to the home screen"
         FastCommand.GoBack -> "Going back"
     }
-
-    private data class NotificationKey(val phase: AssistantPhase, val action: String?, val running: Boolean)
 
     /** Mutable timing accumulator for one request. */
     private class TurnClock(val source: InputSource, val startedAt: Long, val wakeDetectionMs: Long?) {
