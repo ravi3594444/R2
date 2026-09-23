@@ -85,7 +85,7 @@ class AssistantController(
     private var speechJob: Job? = null
     private var pendingConfirm: CompletableDeferred<Boolean>? = null
     private var turn: TurnClock? = null
-    private var keywordEncoder: KeywordEncoder? = null
+    @Volatile private var keywordEncoder: KeywordEncoder? = null
 
     init {
         scope.launch { audio.level.collect { level -> _state.update { it.copy(micLevel = level) } } }
@@ -480,7 +480,9 @@ class AssistantController(
 
     /** Converts a candidate wake phrase to model tokens so Settings can show and validate it. */
     fun previewWakePhrase(phrase: String): Result<EncodedKeyword> = runCatching {
-        val encoder = keywordEncoder ?: KeywordEncoder.fromAssets(appContext).also { keywordEncoder = it }
+        val encoder = synchronized(this) {
+            keywordEncoder ?: KeywordEncoder.fromAssets(appContext).also { keywordEncoder = it }
+        }
         encoder.encode(phrase)
     }
 
@@ -545,8 +547,9 @@ class AssistantController(
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
+    /** Biases Flux toward the wake phrase and the words simple commands depend on. */
     private fun keyterms(s: WakeySettings): List<String> =
-        (listOf("Wakey") + s.wakePhrase.split(' ').filter { it.length > 3 }).distinct().take(5)
+        (listOf("Wakey") + s.wakePhrase.split(' ').filter { it.length > 3 } + COMMAND_KEYTERMS).distinct().take(MAX_KEYTERMS)
 
     private fun describe(command: FastCommand) = when (command) {
         is FastCommand.Torch -> if (command.on) "Turning the flashlight on" else "Turning the flashlight off"
@@ -594,6 +597,11 @@ class AssistantController(
         private const val CONFIRM_TIMEOUT_MS = 60_000L
         private const val MAX_ENTRIES = 200
         private const val MAX_RECENT_ACTIONS = 12
+        private const val MAX_KEYTERMS = 16
+        private val COMMAND_KEYTERMS = listOf(
+            "flashlight", "torch", "Calculator", "YouTube", "WhatsApp", "Chrome", "Settings", "Bluetooth",
+            "kholo", "karo", "jalao", "band karo",
+        )
         private val PASSIVE_TOOLS = setOf("read_screen", "take_screenshot", "finish", "ask_user", "thinking")
 
         private val STOP_PHRASES = setOf(
