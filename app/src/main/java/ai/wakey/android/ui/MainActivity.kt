@@ -54,8 +54,9 @@ private enum class Screen { Main, Settings, Setup }
 private fun WakeyRoot(controller: AssistantController) {
     // The mic level changes tens of times a second. It is collected on its own and read only while
     // drawing the orb, so the rest of the UI recomposes only when something else changes.
+    val initialState = remember(controller) { controller.state.value.copy(micLevel = 0f) }
     val stateFlow = remember(controller) { controller.state.map { it.copy(micLevel = 0f) }.distinctUntilChanged() }
-    val state by stateFlow.collectAsStateWithLifecycle(controller.state.value.copy(micLevel = 0f))
+    val state by stateFlow.collectAsStateWithLifecycle(initialState)
     val micLevelFlow = remember(controller) { controller.state.map { it.micLevel }.distinctUntilChanged() }
     val micLevel = micLevelFlow.collectAsStateWithLifecycle(0f)
     val settings by controller.settings.collectAsStateWithLifecycle()

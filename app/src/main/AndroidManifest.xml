@@ -12,6 +12,7 @@
     <!-- Only used as a fallback if a device refuses torch control without it. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
 
@@ -28,9 +29,10 @@
     <application
         android:name=".WakeyApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@drawable/ic_wakey"
         android:roundIcon="@drawable/ic_wakey"
-        android:label="Wakey"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Wakey"
         android:usesCleartextTraffic="false">

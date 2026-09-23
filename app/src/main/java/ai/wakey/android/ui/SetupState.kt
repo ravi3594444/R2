@@ -132,7 +132,8 @@ class WakeySetup internal constructor(private val context: Context) {
         val action = pendingAction
         pendingAction = null
         val micDenied = Manifest.permission.RECORD_AUDIO in requested && !status.microphone
-        val notificationsDenied = Manifest.permission.POST_NOTIFICATIONS in requested && !status.notifications
+        val notificationsDenied = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            Manifest.permission.POST_NOTIFICATIONS in requested && !status.notifications
         if (!micDenied) action?.invoke()
         notice = when {
             micDenied -> PermissionNotice.MicrophoneDenied
