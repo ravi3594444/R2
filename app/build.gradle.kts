@@ -128,7 +128,12 @@ android {
 
     testOptions { unitTests.isReturnDefaultValues = true }
 
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // Sideloaded test builds: compress dex and native libs so the APK is a smaller download.
+        dex.useLegacyPackaging = true
+        jniLibs.useLegacyPackaging = true
+    }
 }
 
 tasks.named("preBuild") { dependsOn(extractKwsModel) }
