@@ -15,3 +15,7 @@ captures/
 .idea/
 *.iml
 .DS_Store
+
+# Personal API keys baked into debug builds (never commit)
+secrets.properties
+.kotlin/

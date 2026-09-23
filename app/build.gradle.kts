@@ -1,7 +1,87 @@
+import java.net.URI
+import java.security.MessageDigest
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// ---------------------------------------------------------------------------
+// Third-party binaries: sherpa-onnx Android AAR and the English KWS model.
+// Downloaded once from the official k2-fsa release, SHA-256 verified, and
+// cached under the Gradle user home so the repository stays source-only.
+// ---------------------------------------------------------------------------
+val sherpaVersion = "1.13.8"
+val sherpaAarSha256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+val kwsModelName = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01-mobile"
+val kwsModelSha256 = "2e6ac2577310bfa2f4b6b5fab0478b868c9d0b2cb2c51b3e13b50581b588864d"
+val depsCache = File(gradle.gradleUserHomeDir, "wakey-deps")
+
+fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").run {
+    file.inputStream().use { input ->
+        val buffer = ByteArray(1 shl 16)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            update(buffer, 0, read)
+        }
+    }
+    digest().joinToString("") { "%02x".format(it) }
+}
+
+fun verifiedDownload(url: String, expectedSha256: String, dest: File): File {
+    if (dest.isFile && sha256(dest) == expectedSha256) return dest
+    dest.parentFile.mkdirs()
+    val partial = File(dest.path + ".part")
+    logger.lifecycle("Downloading $url")
+    URI(url).toURL().openStream().use { input -> partial.outputStream().use { input.copyTo(it) } }
+    val actual = sha256(partial)
+    if (actual != expectedSha256) {
+        partial.delete()
+        throw GradleException("Checksum mismatch for $url: expected $expectedSha256, got $actual")
+    }
+    partial.renameTo(dest)
+    return dest
+}
+
+val sherpaAar = verifiedDownload(
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/sherpa-onnx-$sherpaVersion.aar",
+    sherpaAarSha256,
+    File(depsCache, "sherpa-onnx-$sherpaVersion.aar"),
+)
+val kwsTarball = verifiedDownload(
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/$kwsModelName.tar.bz2",
+    kwsModelSha256,
+    File(depsCache, "$kwsModelName.tar.bz2"),
+)
+
+val generatedAssets = layout.buildDirectory.dir("generated/wakeyAssets")
+val extractKwsModel by tasks.registering(Copy::class) {
+    from(tarTree(resources.bzip2(kwsTarball))) {
+        include("$kwsModelName/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
+        include("$kwsModelName/decoder-epoch-12-avg-2-chunk-16-left-64.onnx")
+        include("$kwsModelName/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
+        include("$kwsModelName/tokens.txt")
+        include("$kwsModelName/bpe.model")
+        eachFile { path = "kws/$name" }
+        includeEmptyDirs = false
+    }
+    into(generatedAssets)
+}
+
+// ---------------------------------------------------------------------------
+// Personal-testing credentials. Read from the git-ignored secrets.properties
+// (or environment variables) and compiled into DEBUG builds only. The app
+// copies them into Android Keystore-encrypted storage on first launch.
+// ---------------------------------------------------------------------------
+val secrets = Properties().apply {
+    val file = rootProject.file("secrets.properties")
+    if (file.isFile) file.inputStream().use(::load)
+}
+fun secret(name: String): String = (secrets.getProperty(name) ?: System.getenv(name) ?: "").trim()
+fun quoted(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "ai.wakey.android"
@@ -11,8 +91,30 @@ android {
         applicationId = "ai.wakey.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(""))
+        buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(""))
+    }
+
+    buildTypes {
+        debug {
+            buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(secret("FIREWORKS_API_KEY")))
+            buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(secret("DEEPGRAM_API_KEY")))
+        }
+        release {
+            isMinifyEnabled = false
+        }
+    }
+
+    sourceSets["main"].assets.srcDir(generatedAssets)
+
+    androidResources { noCompress += listOf("onnx", "model") }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -20,7 +122,37 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
+
+    testOptions { unitTests.isReturnDefaultValues = true }
+
+    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+}
+
+tasks.named("preBuild") { dependsOn(extractKwsModel) }
+
+dependencies {
+    implementation(files(sherpaAar))
+
+    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    implementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.animation:animation")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
