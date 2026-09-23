@@ -15,8 +15,10 @@ plugins {
 // ---------------------------------------------------------------------------
 val sherpaVersion = "1.13.8"
 val sherpaAarSha256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
-val kwsModelName = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01-mobile"
-val kwsModelSha256 = "2e6ac2577310bfa2f4b6b5fab0478b868c9d0b2cb2c51b3e13b50581b588864d"
+// The "-mobile" variant of this release has an encoder that fails at its first Reshape on every
+// onnxruntime tested (incl. the one bundled with the AAR); the standard export works.
+val kwsModelName = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+val kwsModelSha256 = "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"
 val depsCache = File(gradle.gradleUserHomeDir, "wakey-deps")
 
 fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").run {
