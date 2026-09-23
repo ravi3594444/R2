@@ -96,7 +96,8 @@ class AndroidSpeaker(private val context: Context, private val settings: () -> W
                         throw SpeechOutputException("Android text-to-speech refused the reply.")
                     }
                 }
-                reply.done.await()
+                // Bounded: if the engine dies mid-utterance no callback ever arrives.
+                withTimeoutOrNull(maxSpeechMs(text)) { reply.done.await() } ?: tts.stop()
             } catch (e: Exception) {
                 // Includes cancellation: silence the rest of this reply unless a newer one has already replaced it.
                 if (latestReply == id) tts.stop()
@@ -219,6 +220,9 @@ class AndroidSpeaker(private val context: Context, private val settings: () -> W
     )
 
     private companion object {
+        /** Generous upper bound for one reply (~6 chars/s even at slow rates) plus engine start-up. */
+        fun maxSpeechMs(text: String): Long = 10_000L + text.length * 170L
+
         const val BIND_TIMEOUT_MS = 6_000L
     }
 }

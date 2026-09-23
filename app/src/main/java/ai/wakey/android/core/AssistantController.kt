@@ -28,6 +28,7 @@ import ai.wakey.android.wake.EncodedKeyword
 import ai.wakey.android.wake.KeywordEncoder
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
@@ -84,6 +85,8 @@ class AssistantController(
     private var taskJob: Job? = null
     private var speechJob: Job? = null
     private var pendingConfirm: CompletableDeferred<Boolean>? = null
+    /** The STT session opened to hear a spoken yes/no, closed when the confirmation resolves. */
+    private var confirmSession: SttSession? = null
     private var turn: TurnClock? = null
     @Volatile private var keywordEncoder: KeywordEncoder? = null
 
@@ -99,6 +102,18 @@ class AssistantController(
                     }
                 }
         }
+        appContext.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onLost(network: Network) {
+                    scope.launch {
+                        if (session != null && !isOnline()) {
+                            cancelListening()
+                            reportProblem("Lost the internet connection.")
+                        }
+                    }
+                }
+            },
+        )
         // Bind Android TTS early so Settings can list installed voices on first open.
         speaker.android.availableVoices()
         // WakeService itself mirrors state into its notification; it reports start failures here.
@@ -153,10 +168,11 @@ class AssistantController(
     private fun onWakeDetected(event: WakeEvent) {
         scope.launch {
             if (session != null) return@launch
-            if (pendingConfirm != null) {
+            val confirmation = pendingConfirm
+            if (confirmation != null) {
                 // "Hey Wakey, yes" answers the pending confirmation instead of starting a new task.
                 speaker.stop()
-                startListening(InputSource.WakeWord, event, forConfirmation = true)
+                confirmSession = startListening(InputSource.WakeWord, event, confirmation)
                 return@launch
             }
             // Barge-in: the wake word interrupts speech or a running task.
@@ -187,29 +203,49 @@ class AssistantController(
         session?.endTurn()
     }
 
-    private fun startListening(source: InputSource, wake: WakeEvent?, forConfirmation: Boolean = false) {
+    /**
+     * Opens a Deepgram session fed by the microphone. With [confirmation], the transcript answers that
+     * pending approval instead of becoming a new request. Returns the session, or null if none started.
+     */
+    private fun startListening(
+        source: InputSource,
+        wake: WakeEvent?,
+        confirmation: CompletableDeferred<Boolean>? = null,
+        reopened: Boolean = false,
+    ): SttSession? {
+        // Never leave an earlier session streaming behind the new one.
+        if (session != null) cancelListening()
         val s = settingsRepo.current
         if (!secrets.has(SecretKind.DeepgramApiKey)) {
             audio.stopCommandStream()
             reportProblem("Add your Deepgram API key in Settings to use voice.")
-            return
+            return null
         }
         if (!isOnline()) {
             audio.stopCommandStream()
             reportProblem("No internet connection. Voice needs Deepgram; typed direct commands still work.")
-            return
+            return null
         }
         val clock = TurnClock(source, SystemClock.elapsedRealtime(), wake?.detectionLatencyMs)
-        if (!forConfirmation) turn = clock
+        if (confirmation == null) turn = clock
         val token = ++sessionToken
         _state.update {
             it.copy(phase = AssistantPhase.Hearing, liveTranscript = "", statusMessage = null, statusIsError = false)
         }
         val listener = object : SttListener {
-            override fun onConnected(connectMs: Long) = post(token) { clock.sttConnectMs = connectMs }
-            override fun onSpeechStarted() = post(token) { clock.speechStarted = true }
+            override fun onConnected(connectMs: Long) = post(token) {
+                clock.sttConnectMs = connectMs
+                clock.lastEventAt = SystemClock.elapsedRealtime()
+            }
+
+            override fun onSpeechStarted() = post(token) {
+                clock.speechStarted = true
+                clock.lastEventAt = SystemClock.elapsedRealtime()
+            }
+
             override fun onTranscript(text: String, isFinal: Boolean, languages: List<String>, transcriptionMs: Long?) =
                 post(token) {
+                    clock.lastEventAt = SystemClock.elapsedRealtime()
                     val cleaned = stripWakePhrase(text, s.wakePhrase)
                     if (!isFinal) {
                         if (cleaned.isNotBlank()) clock.speechStarted = true
@@ -219,12 +255,13 @@ class AssistantController(
                     clock.transcriptionMs = transcriptionMs
                     clock.speechSessionMs = SystemClock.elapsedRealtime() - clock.startedAt
                     finishListening()
-                    if (forConfirmation) {
-                        answerByVoice(cleaned)
-                    } else if (cleaned.isBlank()) {
-                        reportProblem("I didn't catch that.", speak = source == InputSource.WakeWord)
-                    } else {
-                        handleUtterance(cleaned, source, languages)
+                    when {
+                        confirmation != null -> answerByVoice(cleaned, confirmation)
+                        // Only "Hey Wakey" was heard (the user paused): keep listening for the request once.
+                        cleaned.isBlank() && text.isNotBlank() && source == InputSource.WakeWord && !reopened ->
+                            startListening(InputSource.WakeWord, wake, reopened = true)
+                        cleaned.isBlank() -> reportProblem("I didn't catch that.", speak = source == InputSource.WakeWord)
+                        else -> handleUtterance(cleaned, source, languages)
                     }
                 }
 
@@ -236,7 +273,7 @@ class AssistantController(
                     SttError.Kind.Network -> "Lost the connection to Deepgram."
                     else -> "Speech recognition failed: ${error.message}"
                 }
-                if (!forConfirmation) reportProblem(message)
+                if (confirmation == null) reportProblem(message)
             }
         }
         val newSession = try {
@@ -244,22 +281,49 @@ class AssistantController(
         } catch (e: Exception) {
             audio.stopCommandStream()
             reportProblem("Could not start speech recognition: ${e.message}")
-            return
+            return null
         }
         session = newSession
-        audio.startCommandStream { buffer, length -> newSession.sendPcm(buffer, length) }
+        try {
+            audio.startCommandStream { buffer, length -> newSession.sendPcm(buffer, length) }
+        } catch (e: Exception) {
+            cancelListening()
+            reportProblem("Could not use the microphone: ${e.message}")
+            return null
+        }
         if (s.speakReplies && s.ttsEngine == TtsEngine.Deepgram) speaker.deepgram.prewarmConnection()
         listenWatchdog?.cancel()
-        listenWatchdog = scope.launch {
-            // Nothing said: give up quickly. Something said: cap the utterance length.
-            delay(if (source == InputSource.PushToTalk) 30_000 else NO_SPEECH_TIMEOUT_MS)
-            if (!clock.speechStarted && source != InputSource.PushToTalk) {
-                cancelListening()
-                if (!forConfirmation) reportProblem("I didn't hear anything.", speak = false)
-                return@launch
+        listenWatchdog = scope.launch { watchSession(newSession, clock, confirmation != null) }
+        return newSession
+    }
+
+    /** Ends a session that hears nothing, stalls (e.g. the network died mid-stream) or runs too long. */
+    private suspend fun watchSession(watched: SttSession, clock: TurnClock, forConfirmation: Boolean) {
+        val pushToTalk = clock.source == InputSource.PushToTalk
+        val maxMs = if (pushToTalk) MAX_PUSH_TO_TALK_MS else MAX_UTTERANCE_MS
+        var endRequested = false
+        while (session === watched) {
+            delay(WATCHDOG_TICK_MS)
+            if (session !== watched) return
+            val now = SystemClock.elapsedRealtime()
+            when {
+                !clock.speechStarted && !pushToTalk && now - clock.startedAt > NO_SPEECH_TIMEOUT_MS -> {
+                    cancelListening()
+                    if (forConfirmation) return
+                    if (clock.sttConnectMs == null) reportProblem("Couldn't reach Deepgram. Check your internet connection.")
+                    else reportProblem("I didn't hear anything.", speak = false)
+                    return
+                }
+                clock.speechStarted && now - clock.lastEventAt > STALL_TIMEOUT_MS -> {
+                    cancelListening()
+                    if (!forConfirmation) reportProblem("Lost the connection to Deepgram.")
+                    return
+                }
+                !endRequested && now - clock.startedAt > maxMs -> {
+                    endRequested = true
+                    watched.endTurn()
+                }
             }
-            delay(MAX_UTTERANCE_MS)
-            session?.endTurn()
         }
     }
 
@@ -417,12 +481,16 @@ class AssistantController(
                 }
             }
             // Voice answer is possible only while the microphone service is running.
-            if (_state.value.wakeServiceRunning && !deferred.isCompleted) startListening(InputSource.Mic, null, forConfirmation = true)
-            _state.update { it.copy(phase = AssistantPhase.Acting) }
+            if (_state.value.wakeServiceRunning && !deferred.isCompleted && session == null) {
+                confirmSession = startListening(InputSource.Mic, null, deferred)
+            }
+            if (session == null) _state.update { it.copy(phase = AssistantPhase.Acting) }
             withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
         } finally {
             withContext(NonCancellable) {
-                if (session != null && _state.value.phase == AssistantPhase.Hearing) cancelListening()
+                // Answered by tap or notification: close the mic opened for a spoken answer.
+                confirmSession?.let { if (session === it) cancelListening() }
+                confirmSession = null
                 pendingConfirm = null
                 notifications.cancelConfirmation(id)
                 _state.update { it.copy(pendingConfirmation = null, phase = previousPhase) }
@@ -433,17 +501,22 @@ class AssistantController(
     /** From the in-app dialog or a notification action. */
     fun answerConfirmation(id: Long, approved: Boolean) {
         if (_state.value.pendingConfirmation?.id != id) return
+        speaker.stop()
         pendingConfirm?.complete(approved)
     }
 
-    private fun answerByVoice(answer: String) {
+    private fun answerByVoice(answer: String, confirmation: CompletableDeferred<Boolean>) {
+        if (isStopPhrase(answer)) {
+            stop()
+            return
+        }
         val normalized = answer.lowercase().trim(' ', '.', '!', '?', '।')
         val verdict = when {
             NO_WORDS.any { normalized == it || normalized.startsWith("$it ") } -> false
             YES_WORDS.any { normalized == it || normalized.startsWith("$it ") } -> true
             else -> null
         }
-        if (verdict != null) pendingConfirm?.complete(verdict)
+        if (verdict != null) confirmation.complete(verdict)
         else setStatus("Didn't understand “$answer”. Tap Approve or Deny.")
     }
 
@@ -486,12 +559,21 @@ class AssistantController(
         encoder.encode(phrase)
     }
 
-    suspend fun testLlmConnection(): String = runCatching { chatModel.testConnection() }
-        .getOrElse { "Failed: ${it.message}" }
+    suspend fun testLlmConnection(): String = try {
+        chatModel.testConnection()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        "Failed: ${e.message}"
+    }
 
-    suspend fun testDeepgramConnection(): String = runCatching {
+    suspend fun testDeepgramConnection(): String = try {
         (stt as? ai.wakey.android.stt.DeepgramFluxStt)?.testConnection() ?: "Not available"
-    }.getOrElse { "Failed: ${it.message}" }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        "Failed: ${e.message}"
+    }
 
     fun androidVoices(): List<VoiceOption> = speaker.android.availableVoices()
     fun deepgramVoices(): List<VoiceOption> = ai.wakey.android.tts.DeepgramSpeaker.VOICES
@@ -564,6 +646,7 @@ class AssistantController(
         var transcriptionMs: Long? = null
         var speechSessionMs: Long? = null
         var speechStarted = false
+        var lastEventAt: Long = startedAt
         var requestAt: Long = startedAt
         var firstActionAt: Long? = null
         var replyStartAt: Long? = null
@@ -593,7 +676,11 @@ class AssistantController(
 
     companion object {
         private const val NO_SPEECH_TIMEOUT_MS = 7_000L
-        private const val MAX_UTTERANCE_MS = 15_000L
+        private const val MAX_UTTERANCE_MS = 22_000L
+        private const val MAX_PUSH_TO_TALK_MS = 30_000L
+        /** Flux ends a turn within eot_timeout (3 s) of silence, so this long without events means a dead link. */
+        private const val STALL_TIMEOUT_MS = 8_000L
+        private const val WATCHDOG_TICK_MS = 250L
         private const val CONFIRM_TIMEOUT_MS = 60_000L
         private const val MAX_ENTRIES = 200
         private const val MAX_RECENT_ACTIONS = 12

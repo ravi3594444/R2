@@ -1,5 +1,6 @@
 package ai.wakey.android.agent
 
+import ai.wakey.android.WakeyApp
 import ai.wakey.android.accessibility.ScreenController
 import android.app.KeyguardManager
 import android.content.ActivityNotFoundException
@@ -19,7 +20,11 @@ import kotlinx.coroutines.withContext
  * Direct Android actions: torch, app launch, home/back. App launches go through [screen] when the
  * accessibility service is bound, because it may start activities while Wakey is in the background.
  */
-class DeviceActions(private val context: Context, private val screen: () -> ScreenController?) {
+class DeviceActions(
+    private val context: Context,
+    private val screen: () -> ScreenController?,
+    private val appVisible: () -> Boolean = { WakeyApp.isVisible },
+) {
     private val cameraManager: CameraManager? by lazy { context.getSystemService(CameraManager::class.java) }
     private val keyguard: KeyguardManager? by lazy { context.getSystemService(KeyguardManager::class.java) }
 
@@ -79,6 +84,8 @@ class DeviceActions(private val context: Context, private val screen: () -> Scre
     private fun launch(name: String, target: LaunchTarget?): AppLaunch {
         if (isLocked()) return AppLaunch(ActionOutcome(false, LOCKED_MESSAGE))
         if (target == null) return AppLaunch(ActionOutcome(false, "I couldn't find an app called ${name.trim()} on this phone."))
+        // Without screen control Android silently blocks launches while Wakey is in the background.
+        if (screen() == null && !appVisible()) return AppLaunch(ActionOutcome(false, BACKGROUND_MESSAGE))
         if (!start(target.intent)) return AppLaunch(ActionOutcome(false, "I couldn't open ${target.label}."))
         return AppLaunch(ActionOutcome(true, "Opening ${target.label}."), target.packageName, target.label)
     }
@@ -147,6 +154,8 @@ class DeviceActions(private val context: Context, private val screen: () -> Scre
 
     internal companion object {
         const val LOCKED_MESSAGE = "Please unlock your phone first — I can't bypass the lock screen."
+        const val BACKGROUND_MESSAGE =
+            "Android won't let me open apps from the background. Turn on Wakey screen control in Settings › Accessibility, or open Wakey first."
         private val NO_FLASHLIGHT = ActionOutcome(false, "This phone has no flashlight.")
         private const val APP_CACHE_MS = 30_000L
     }
