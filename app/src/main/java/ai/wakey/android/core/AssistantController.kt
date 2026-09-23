@@ -12,6 +12,7 @@ import ai.wakey.android.audio.WakeEvent
 import ai.wakey.android.config.SecretKind
 import ai.wakey.android.config.SecretStore
 import ai.wakey.android.config.SettingsRepository
+import ai.wakey.android.config.TtsEngine
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.llm.ChatModel
 import ai.wakey.android.service.Notifications
@@ -98,6 +99,8 @@ class AssistantController(
                     }
                 }
         }
+        // Bind Android TTS early so Settings can list installed voices on first open.
+        speaker.android.availableVoices()
         // WakeService itself mirrors state into its notification; it reports start failures here.
         scope.launch { WakeService.startProblem.filterNotNull().collect { setStatus(it, error = true) } }
     }
@@ -245,6 +248,7 @@ class AssistantController(
         }
         session = newSession
         audio.startCommandStream { buffer, length -> newSession.sendPcm(buffer, length) }
+        if (s.speakReplies && s.ttsEngine == TtsEngine.Deepgram) speaker.deepgram.prewarmConnection()
         listenWatchdog?.cancel()
         listenWatchdog = scope.launch {
             // Nothing said: give up quickly. Something said: cap the utterance length.
@@ -404,7 +408,13 @@ class AssistantController(
         return try {
             if (settingsRepo.current.speakReplies) {
                 _state.update { it.copy(phase = AssistantPhase.Speaking) }
-                runCatching { speaker.speak(request.question + " Say yes or no, or tap Approve.", null) }
+                try {
+                    speaker.speak(request.question + " Say yes or no, or tap Approve.", null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // The question is also on screen and in a notification; carry on without speech.
+                }
             }
             // Voice answer is possible only while the microphone service is running.
             if (_state.value.wakeServiceRunning && !deferred.isCompleted) startListening(InputSource.Mic, null, forConfirmation = true)
