@@ -91,6 +91,8 @@ class AgentLoop internal constructor(
         private var screenshotAt = -1
         private var invalidStreak = 0
         private var unchangedStreak = 0
+        /** The premature-finish correction is sent at most once per run. */
+        private var finishChecked = false
 
         fun result(status: AgentStatus, reply: String) =
             AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt)
@@ -159,7 +161,12 @@ class AgentLoop internal constructor(
         /** Runs one validated action; returns the final result if it ends the run. */
         private suspend fun perform(action: AgentAction, call: ToolCall): AgentResult? {
             when (action) {
-                is AgentAction.Finish -> return result(AgentStatus.Completed, action.reply)
+                is AgentAction.Finish -> {
+                    val correction = if (finishChecked) null else FinishCheck.unopenedTarget(goal, observation)
+                    finishChecked = true
+                    if (correction == null) return result(AgentStatus.Completed, action.reply)
+                    messages += ChatMessage.Tool(call.id, call.name, correction)
+                }
                 is AgentAction.AskUser -> return result(AgentStatus.NeedsUser, action.question)
                 AgentAction.ReadScreen -> readScreen(call)
                 AgentAction.TakeScreenshot -> takeScreenshot(call)
