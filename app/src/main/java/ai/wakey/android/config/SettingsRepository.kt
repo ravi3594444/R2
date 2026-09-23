@@ -30,7 +30,7 @@ class SettingsRepository(context: Context) {
         llmModel = s.llmModel.trim(),
         deepgramVoice = s.deepgramVoice.trim(),
         sttModel = s.sttModel.trim(),
-        wakePhrase = s.wakePhrase.trim().replace(Regex("\\s+"), " "),
+        wakePhrase = WakeySettings.normalizeWakePhrase(s.wakePhrase),
     )
 
     private fun load(): WakeySettings {

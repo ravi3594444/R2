@@ -556,7 +556,7 @@ class AssistantController(
         val encoder = synchronized(this) {
             keywordEncoder ?: KeywordEncoder.fromAssets(appContext).also { keywordEncoder = it }
         }
-        encoder.encode(phrase)
+        encoder.encode(WakeySettings.normalizeWakePhrase(phrase))
     }
 
     suspend fun testLlmConnection(): String = try {

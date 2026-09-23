@@ -41,6 +41,10 @@ data class WakeySettings(
         const val DEFAULT_LLM_MODEL = "accounts/fireworks/models/deepseek-v4p1-flash"
         const val DEFAULT_MAX_STEPS = 12
         const val MAX_AGENT_STEPS_LIMIT = 25
+
+        /** "Hey, Wakey!" → "Hey Wakey": the keyword encoder accepts letters, apostrophes and spaces only. */
+        fun normalizeWakePhrase(phrase: String): String =
+            phrase.replace(Regex("[,.!?;:\"]"), " ").trim().replace(Regex("\\s+"), " ")
     }
 }
 

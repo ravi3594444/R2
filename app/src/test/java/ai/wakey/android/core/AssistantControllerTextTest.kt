@@ -54,3 +54,27 @@ class AssistantControllerTextTest {
         assertNull(AssistantController.languageTagFor("Flashlight is on.", listOf("en")))
     }
 }
+
+/** The one-breath voice path after transcription: strip the wake phrase, then route directly. */
+class WakeTranscriptRoutingTest {
+    private fun route(transcript: String) =
+        ai.wakey.android.agent.FastCommandRouter.route(AssistantController.stripWakePhrase(transcript, "Hey Wakey"))
+
+    @Test
+    fun liveFluxTranscriptsReachFastCommands() {
+        // Transcripts observed from Flux on the desktop pipeline tests.
+        assertEquals(ai.wakey.android.agent.FastCommand.Torch(true), route("Hey, Wakey. Turn on the flashlight."))
+        assertEquals(ai.wakey.android.agent.FastCommand.Torch(true), route("HEY WAKY TURN ON THE FLASHLIGHT"))
+        assertEquals(ai.wakey.android.agent.FastCommand.OpenApp("Calculator"), route("Hey Wakey, open Calculator."))
+    }
+
+    @Test
+    fun multiStepRequestsGoToTheAgent() {
+        assertNull(route("Hey Wakey, open Settings and find Bluetooth."))
+    }
+
+    @Test
+    fun punctuatedWakePhraseIsNormalised() {
+        assertEquals("Hey Wakey", ai.wakey.android.config.WakeySettings.normalizeWakePhrase(" Hey, Wakey! "))
+    }
+}
