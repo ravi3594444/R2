@@ -94,9 +94,9 @@ class AgentToolsTest {
             val properties = schema.getJSONObject("properties")
             val required = schema.optJSONArray("required")
             for (i in 0 until (required?.length() ?: 0)) assertTrue(spec.name, properties.has(required!!.getString(i)))
-            val isAction = spec.name in setOf("open_app", "tap", "enter_text", "scroll", "go_back", "go_home")
+            val isAction = spec.name in setOf("open_app", "tap", "enter_text", "scroll", "scroll_to", "tap_point", "go_back", "go_home")
             assertEquals(spec.name, isAction, properties.has("sensitive") && properties.has("reason"))
         }
-        assertEquals(10, AgentTools.specs.size)
+        assertEquals(12, AgentTools.specs.size)
     }
 }
