@@ -95,7 +95,6 @@ android {
         targetSdk = 35
         versionCode = 2
         versionName = "0.2.0"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(""))
         buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(""))
     }
@@ -104,9 +103,22 @@ android {
         debug {
             buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(secret("FIREWORKS_API_KEY")))
             buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(secret("DEEPGRAM_API_KEY")))
+            // Shrink (not obfuscate) so the sideload APK stays small; see proguard-rules.pro.
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         release {
             isMinifyEnabled = false
+        }
+    }
+
+    // One APK per CPU family instead of a universal one: most Android 12+ phones need only arm64-v8a.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
         }
     }
 
