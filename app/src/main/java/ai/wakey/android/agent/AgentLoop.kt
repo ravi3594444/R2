@@ -10,14 +10,19 @@ import ai.wakey.android.core.AgentActionInfo
 import ai.wakey.android.llm.ChatMessage
 import ai.wakey.android.llm.ChatModel
 import ai.wakey.android.llm.ChatRequest
+import ai.wakey.android.llm.ChatResponse
+import ai.wakey.android.llm.DecisionModel
 import ai.wakey.android.llm.LlmException
 import ai.wakey.android.llm.ToolCall
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -46,12 +51,14 @@ class AgentLoop internal constructor(
     private val clock: () -> Long,
     private val timeoutMs: Long,
     private val onStopRequested: () -> Unit,
+    private val decisions: () -> DecisionModel? = { null },
 ) {
     constructor(
         model: ChatModel,
         device: DeviceActions,
         screen: () -> ScreenController?,
         settings: () -> WakeySettings,
+        decisions: () -> DecisionModel? = { null },
     ) : this(
         model = model,
         apps = object : AppLauncher {
@@ -63,6 +70,7 @@ class AgentLoop internal constructor(
         clock = SystemClock::elapsedRealtime,
         timeoutMs = TIMEOUT_MS,
         onStopRequested = { WakeyApp.graph.controller.stop() },
+        decisions = decisions,
     )
 
     /** One id per app process, so every agent call can hit the provider's cached prompt prefix. */
@@ -103,13 +111,20 @@ class AgentLoop internal constructor(
         private var pendingShot: ScreenshotResult? = null
         private var autoShotSignature: String? = null
         private var lastOutcome: ActionOutcome? = null
+        private var decisionCalls = 0
+        /** Model turns to leave to the LLM after a fast decision didn't help; the fast model is off for good on errors. */
+        private var fastCooldown = 0
+        private var fastOff = false
+        private var fastCalls = 0
+        /** Short descriptions of what has been done, given to the fast model as context. */
+        private val actionLog = mutableListOf<String>()
         private var invalidStreak = 0
         private var unchangedStreak = 0
         /** The premature-finish correction is sent at most once per run. */
         private var finishChecked = false
 
         fun result(status: AgentStatus, reply: String) =
-            AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt)
+            AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt, decisionCalls)
 
         suspend fun run(): AgentResult {
             val controller = screen()
@@ -144,13 +159,19 @@ class AgentLoop internal constructor(
             while (steps < maxSteps) {
                 currentCoroutineContext().ensureActive()
                 attachScreenshotIfThin()
-                val response = try {
-                    model.complete(
-                        ChatRequest(messages.toList(), tools, maxTokens = MAX_COMPLETION_TOKENS, sessionId = affinityId),
-                    )
-                } catch (e: LlmException) {
-                    return result(AgentStatus.Failed, replies.llmError(e.kind))
+                val request = ChatRequest(messages.toList(), tools, maxTokens = MAX_COMPLETION_TOKENS, sessionId = affinityId)
+                val response = when (val race = decideNext(request)) {
+                    is Race.Fast -> {
+                        when (val fast = runFastMove(race.move, race.screen)) {
+                            is FastResult.Finished -> return fast.result
+                            FastResult.Acted, FastResult.Declined -> continue
+                        }
+                    }
+                    is Race.Llm -> race.response.getOrElse { e ->
+                        if (e is LlmException) return result(AgentStatus.Failed, replies.llmError(e.kind)) else throw e
+                    }
                 }
+                if (fastCooldown > 0) fastCooldown--
                 llmCalls++
                 promptTokens += response.promptTokens
                 completionTokens += response.completionTokens
@@ -225,6 +246,85 @@ class AgentLoop internal constructor(
             }
             return null
         }
+
+        /**
+         * Picks the next step. The LLM request always starts; when the element list alone can decide
+         * the step, the fast decision model (Jev, ~0.4 s) races it. A confident Jev answer that arrives
+         * first cancels the LLM call; otherwise the LLM's answer is used, so the hybrid is never slower
+         * than the LLM alone.
+         */
+        private suspend fun decideNext(request: ChatRequest): Race = coroutineScope {
+            val llmCall = async { attempt { model.complete(request) } }
+            val fast = fastCandidate() ?: return@coroutineScope Race.Llm(llmCall.await())
+            val (plan, decider, screen) = fast
+            val fastCall = async { attempt { decider.choose(plan.state, FastDecision.INSTRUCTIONS, plan.options) } }
+            select<Race> {
+                llmCall.onAwait { answer ->
+                    fastCall.cancel()
+                    Race.Llm(answer)
+                }
+                fastCall.onAwait { decision ->
+                    // Unreachable, rejected key, bad reply: the LLM handles the rest of this run.
+                    if (decision.isFailure) fastOff = true
+                    val move = decision.getOrNull()?.let { FastDecision.interpret(plan, it) }
+                    if (move != null) {
+                        llmCall.cancel()
+                        Race.Fast(move, screen)
+                    } else {
+                        fastCooldown = 1
+                        Race.Llm(llmCall.await())
+                    }
+                }
+            }
+        }
+
+        /** A decision request for the current screen, when the fast model may decide this step. */
+        private fun fastCandidate(): Triple<FastDecision.Plan, DecisionModel, ScreenObservation>? {
+            if (fastOff || fastCooldown > 0 || access != ScreenAccess.Available || shotSize != null) return null
+            if (fastCalls >= MAX_FAST_CALLS || !FastDecision.suitsGoal(goal)) return null
+            val screen = observation?.takeIf { !looksThin(it) && it.packageName != BuildConfig.APPLICATION_ID } ?: return null
+            val decider = decisions() ?: return null
+            fastCalls++
+            return Triple(FastDecision.plan(goal, screen, actionLog, "fast_$fastCalls"), decider, screen)
+        }
+
+        /**
+         * Runs a confident fast decision through the same safety check and verification as LLM
+         * actions. "Done" needs the screen to show the goal, never just a tap.
+         */
+        private suspend fun runFastMove(move: FastDecision.Move, screen: ScreenObservation): FastResult {
+            decisionCalls++
+            return when (move) {
+                FastDecision.Move.Done -> {
+                    if (FinishCheck.unopenedTarget(goal, screen) != null) {
+                        fastCooldown = 1
+                        FastResult.Declined
+                    } else {
+                        FastResult.Finished(result(AgentStatus.Completed, replies.done(FastDecision.searchQuery(goal), heading(screen))))
+                    }
+                }
+                is FastDecision.Move.Act -> {
+                    steps++
+                    messages += ChatMessage.Assistant(null, listOf(move.call))
+                    act(move.action, move.call)?.let { return FastResult.Finished(it) }
+                    // Same evidence rule as an LLM done claim: e.g. the search words showing in results.
+                    move.confirmText?.let { text ->
+                        val claim = DoneClaim(replies.done(FastDecision.searchQuery(goal), null), text)
+                        if (lastOutcome?.success == true && confirmsDone(claim)) {
+                            return FastResult.Finished(result(AgentStatus.Completed, claim.reply))
+                        }
+                    }
+                    // A failed or no-op step: let the LLM look at it before trusting the fast model again.
+                    if (lastOutcome?.success != true || unchangedStreak > 0) fastCooldown = 1
+                    FastResult.Acted
+                }
+            }
+        }
+
+        /** The screen's title: its first plain-text element, else the app name. */
+        private fun heading(screen: ScreenObservation): String? =
+            screen.elements.firstOrNull { !it.clickable && !it.editable && it.label() != null }?.label()?.substringBefore(" – ")
+                ?: screen.appLabel
 
         /**
          * An action's done claim holds when the screen changed, the promised text is visible outside
@@ -344,6 +444,7 @@ class AgentLoop internal constructor(
             }
             observation = after
             lastOutcome = launch.outcome
+            actionLog += (if (launch.outcome.success) "" else "FAILED: ") + describe(action)
             dropScreenshot()
             listener.onAction(info.copy(result = launch.outcome.message, success = launch.outcome.success))
             addToolResult(call, launch.outcome, after, "New screen")
@@ -480,6 +581,26 @@ class AgentLoop internal constructor(
         is AgentAction.GoHome -> "Going to the home screen"
     }
 
+    private sealed interface Race {
+        data class Llm(val response: Result<ChatResponse>) : Race
+        data class Fast(val move: FastDecision.Move, val screen: ScreenObservation) : Race
+    }
+
+    /** Like runCatching, but cancellation still propagates. */
+    private suspend fun <T> attempt(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    private sealed interface FastResult {
+        data object Declined : FastResult
+        data object Acted : FastResult
+        data class Finished(val result: AgentResult) : FastResult
+    }
+
     private fun outcomeLine(outcome: ActionOutcome) = (if (outcome.success) "OK: " else "FAILED: ") + outcome.message
 
     private companion object {
@@ -498,6 +619,8 @@ class AgentLoop internal constructor(
         const val MAX_STABLE_CHECKS = 4
         /** Batched calls per model turn; enough for "open search, type, submit". */
         const val MAX_CALLS_PER_TURN = 3
+        /** Fast decisions per run; beyond this a task isn't routine and the LLM steers. */
+        const val MAX_FAST_CALLS = 10
         const val MAX_SCROLL_TO = 8
         const val MIN_DONE_TEXT = 2
         const val EARLIER_SCREEN = "(The screen at the start; it has changed since.)"

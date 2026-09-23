@@ -7,6 +7,7 @@ import ai.wakey.android.config.SecretKind
 import ai.wakey.android.config.SecretStore
 import ai.wakey.android.config.SettingsRepository
 import ai.wakey.android.core.AssistantController
+import ai.wakey.android.llm.JevDecisionModel
 import ai.wakey.android.llm.OpenAiCompatibleChatModel
 import ai.wakey.android.service.Notifications
 import ai.wakey.android.stt.DeepgramFluxStt
@@ -63,6 +64,7 @@ class AppGraph(context: Context) {
         // Keystore-encrypted storage. Release builds compile these as empty strings.
         seedIfEmpty(SecretKind.LlmApiKey, BuildConfig.SEED_FIREWORKS_API_KEY)
         seedIfEmpty(SecretKind.DeepgramApiKey, BuildConfig.SEED_DEEPGRAM_API_KEY)
+        seedIfEmpty(SecretKind.DecisionApiKey, BuildConfig.SEED_AIMLAPI_API_KEY)
     }
 
     val http: OkHttpClient = OkHttpClient.Builder()
@@ -86,7 +88,19 @@ class AppGraph(context: Context) {
         apiKey = { secrets.get(SecretKind.LlmApiKey) },
     )
     val device = DeviceActions(appContext, screen = { WakeyAccessibilityService.controller })
-    val agent = AgentLoop(chatModel, device, { WakeyAccessibilityService.controller }) { settings.current }
+    val decisions = JevDecisionModel(
+        http,
+        baseUrl = { settings.current.decisionBaseUrl },
+        model = { settings.current.decisionModel },
+        apiKey = { secrets.get(SecretKind.DecisionApiKey) },
+    )
+    val agent = AgentLoop(
+        model = chatModel,
+        device = device,
+        screen = { WakeyAccessibilityService.controller },
+        settings = { settings.current },
+        decisions = { decisions.takeIf { settings.current.useFastDecisions && secrets.has(SecretKind.DecisionApiKey) } },
+    )
 
     val controller = AssistantController(
         appContext = appContext,
@@ -96,6 +110,7 @@ class AppGraph(context: Context) {
         stt = stt,
         speaker = speaker,
         chatModel = chatModel,
+        decisionModel = decisions,
         device = device,
         agent = agent,
         notifications = notifications,

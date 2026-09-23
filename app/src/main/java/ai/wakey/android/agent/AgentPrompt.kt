@@ -108,6 +108,13 @@ internal object AgentPrompt {
             "स्क्रीन बदल नहीं रही थी, इसलिए मैं रुक गया। यह कदम आपको खुद करना पड़ सकता है।",
         )
 
+        /** Spoken when the fast model sees the task is done; the screen, not a tap, is the evidence. */
+        fun done(query: String?, title: String?) = when {
+            query != null -> pick("Here are the results for $query.", "$query के नतीजे ये रहे।")
+            title != null -> pick("Done. $title is open.", "हो गया, $title खुल गया है।")
+            else -> pick("Done.", "हो गया।")
+        }
+
         fun timeout() = pick("That was taking too long, so I stopped.", "इसमें बहुत समय लग रहा था, इसलिए मैं रुक गया।")
 
         fun confused() = pick(
