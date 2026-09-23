@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wakey</string>
+    <string name="accessibility_label">Wakey screen control</string>
+    <string name="accessibility_description">Lets Wakey read the controls on your screen and tap, type, scroll or go back when you ask it to. Wakey only acts on requests you make, asks before sending, buying or changing account settings, and cannot unlock your phone.</string>
+</resources>

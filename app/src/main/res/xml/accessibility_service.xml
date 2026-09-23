@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    flagIncludeNotImportantViews is deliberately off. Text views, described images and anything
+    actionable are reported without it; the flag mainly adds empty layout wrappers, which roughly
+    doubles tree size, binder traffic and depth and uses up the node budget before real content.
+    Views an app hides from accessibility stay hidden; the screenshot fallback covers what's missing.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeViewScrolled|typeViewFocused"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/accessibility_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="ai.wakey.android.ui.MainActivity" />
