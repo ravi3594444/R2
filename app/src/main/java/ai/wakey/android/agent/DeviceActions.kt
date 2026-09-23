@@ -164,15 +164,17 @@ class DeviceActions(
 /** An app launch request; [packageName] is what should reach the foreground if it worked. */
 internal data class AppLaunch(val outcome: ActionOutcome, val packageName: String? = null, val label: String? = null)
 
-/** Waits a bounded time for [packageName] to reach the foreground; cold starts can take a few seconds. */
-internal suspend fun ScreenController.awaitForeground(packageName: String, attempts: Int = 3): Boolean {
-    repeat(attempts) { attempt ->
-        if (attempt > 0) delay(FOREGROUND_POLL_MS)
-        awaitSettled(FOREGROUND_SETTLE_MS)
+/**
+ * Waits a bounded time for [packageName] to reach the foreground; cold starts can take a few seconds.
+ * Polls instead of waiting for the UI to settle, since launch animations keep content changing.
+ */
+internal suspend fun ScreenController.awaitForeground(packageName: String, timeoutMs: Long = FOREGROUND_TIMEOUT_MS): Boolean {
+    repeat((timeoutMs / FOREGROUND_POLL_MS).toInt()) {
         if (foregroundPackage == packageName) return true
+        delay(FOREGROUND_POLL_MS)
     }
-    return false
+    return foregroundPackage == packageName
 }
 
-private const val FOREGROUND_POLL_MS = 300L
-private const val FOREGROUND_SETTLE_MS = 1_500L
+private const val FOREGROUND_POLL_MS = 150L
+private const val FOREGROUND_TIMEOUT_MS = 5_000L

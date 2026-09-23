@@ -296,8 +296,12 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
     /** A search icon or a fake search box usually opens the real field when tapped. */
     private suspend fun openField(found: Resolution.Found): AccessibilityNodeInfo? {
         if (!tapNode(found.element, found.node).success) return null
-        settle.awaitSettled(FIELD_OPEN_TIMEOUT_MS)
-        return focusedInput() ?: firstEditable()
+        // Return as soon as the real field takes focus instead of waiting out the opening animation.
+        repeat((FIELD_OPEN_TIMEOUT_MS / FIELD_POLL_MS).toInt()) {
+            delay(FIELD_POLL_MS)
+            focusedInput()?.let { return it }
+        }
+        return firstEditable()
     }
 
     private fun focusedInput(): AccessibilityNodeInfo? =
@@ -492,6 +496,7 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         private const val SWIPE_MS = 350L
         private const val SCREENSHOT_RETRY_MS = 1_000L
         private const val FIELD_OPEN_TIMEOUT_MS = 1_500L
+        private const val FIELD_POLL_MS = 100L
         private const val KEYBOARD_TIMEOUT_MS = 1_000L
         private const val SHORT_TEXT_CHARS = 40
     }

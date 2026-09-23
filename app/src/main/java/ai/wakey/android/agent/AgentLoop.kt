@@ -14,9 +14,11 @@ import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 
 /** What the agent needs from [DeviceActions], as an interface so the loop can be tested off-device. */
 internal interface AppLauncher {
@@ -121,12 +123,19 @@ class AgentLoop internal constructor(
             } else {
                 messages += ChatMessage.User(request)
             }
+            // "Open Instagram and search cats": the first step is known, so run it without a model round trip.
+            OpeningStep.appToOpen(goal)?.takeIf { access == ScreenAccess.Available }?.let { app ->
+                val call = ToolCall(OPENING_CALL_ID, AgentTools.OPEN_APP, JSONObject().put("name", app).toString())
+                messages += ChatMessage.Assistant(null, listOf(call))
+                steps++
+                act(AgentAction.OpenApp(app, sensitive = false, reason = null), call)?.let { return it }
+            }
 
             while (steps < maxSteps) {
                 currentCoroutineContext().ensureActive()
                 steps++
                 val response = try {
-                    model.complete(ChatRequest(messages.toList(), tools))
+                    model.complete(ChatRequest(messages.toList(), tools, maxTokens = MAX_COMPLETION_TOKENS))
                 } catch (e: LlmException) {
                     return result(AgentStatus.Failed, replies.llmError(e.kind))
                 }
@@ -227,9 +236,8 @@ class AgentLoop internal constructor(
                 AppLaunch(ActionOutcome(false, "The action failed (${e.javaClass.simpleName})."))
             }
             val after = controller?.takeIf { !it.isLocked }?.let {
-                val launched = launch.packageName
-                if (launched != null) it.awaitForeground(launched) else it.awaitSettled()
-                read(it)
+                launch.packageName?.let { launched -> it.awaitForeground(launched) }
+                settledRead(it)
             }
             observation = after
             dropScreenshot()
@@ -261,6 +269,25 @@ class AgentLoop internal constructor(
             listener.onAction(info)
             screen()?.showStatus(description, onStopRequested)
             return info
+        }
+
+        /**
+         * Reads the screen once it has settled. Apps that animate constantly (feeds, video) never go
+         * quiet, so after a short wait the screen counts as settled once two reads show the same content.
+         */
+        private suspend fun settledRead(controller: ScreenController): ScreenObservation? {
+            val startedAt = clock()
+            controller.awaitSettled(SETTLE_MS)
+            var last = read(controller) ?: return null
+            // Returned before the cap: the UI went quiet, so this read is final.
+            if (clock() - startedAt < SETTLE_MS - SETTLE_SLACK_MS) return last
+            repeat(MAX_STABLE_CHECKS) {
+                delay(STABLE_POLL_MS)
+                val next = read(controller) ?: return last
+                if (next.signature == last.signature) return next
+                last = next
+            }
+            return last
         }
 
         private suspend fun read(controller: ScreenController): ScreenObservation? {
@@ -327,5 +354,12 @@ class AgentLoop internal constructor(
         const val MAX_HISTORY = 6
         const val MAX_HISTORY_CHARS = 500
         const val LOOKING_STATUS = "Looking at the screen"
+        const val OPENING_CALL_ID = "wakey_open_app"
+        /** A tool call needs well under this; it also stops a runaway reply from adding latency. */
+        const val MAX_COMPLETION_TOKENS = 400
+        const val SETTLE_MS = 700L
+        const val SETTLE_SLACK_MS = 50L
+        const val STABLE_POLL_MS = 200L
+        const val MAX_STABLE_CHECKS = 4
     }
 }

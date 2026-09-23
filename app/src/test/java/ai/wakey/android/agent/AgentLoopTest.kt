@@ -32,8 +32,8 @@ class AgentLoopTest {
     fun opensSettingsAndFindsBluetooth() = runTest {
         val screen = FakeScreen(launcher).apply { transitions["Bluetooth"] = bluetooth }
         val apps = FakeApps(screen, mapOf("Settings" to settingsMain))
+        // "open Settings and …" opens Settings without a model call, so the model starts on Settings.
         val model = ScriptedModel.of(
-            toolCall("open_app", """{"name":"Settings"}"""),
             toolCall("tap", """{"element_id":3}"""),
             toolCall("finish", """{"reply":"Bluetooth settings are open."}"""),
         )
@@ -44,9 +44,9 @@ class AgentLoopTest {
         assertEquals(AgentStatus.Completed, result.status)
         assertEquals("Bluetooth settings are open.", result.reply)
         assertEquals(3, result.steps)
-        assertEquals(3, result.llmCalls)
-        assertEquals(300, result.promptTokens)
-        assertEquals(30, result.completionTokens)
+        assertEquals(2, result.llmCalls)
+        assertEquals(200, result.promptTokens)
+        assertEquals(20, result.completionTokens)
         assertEquals(5_000L, result.firstActionAtMs)
         assertEquals(listOf("Settings"), apps.opened)
         assertEquals(listOf("tap Bluetooth"), screen.log)
@@ -60,15 +60,18 @@ class AgentLoopTest {
         assertEquals(listOf("Looking at the screen", "Opening Settings", "Tapping “Bluetooth”"), screen.statuses)
         assertEquals(1, screen.statusHidden)
 
+        // The first model request already carries the opened Settings screen as the open_app result.
         val first = model.requests[0]
         assertEquals(AgentTools.specs.map { it.name }, first.tools.map { it.name })
         assertTrue((first.messages[0] as ChatMessage.System).text.contains("exactly one tool per turn"))
-        val request = first.messages.last() as ChatMessage.User
-        assertTrue(request.text.startsWith("Request: open Settings and find Bluetooth"))
-        assertTrue(request.text.contains("App: Pixel Launcher"))
+        assertTrue(first.messages.any { it is ChatMessage.User && it.text.startsWith("Request: open Settings and find Bluetooth") })
+        val opened = first.messages.last() as ChatMessage.Tool
+        assertEquals("open_app", opened.name)
+        assertTrue(opened.content.startsWith("OK: Opening Settings."))
+        assertTrue(opened.content.contains("App: Settings"))
 
         // The tap's tool result shows the Bluetooth screen, and it is the only full screen left.
-        val last = model.requests[2].messages
+        val last = model.requests[1].messages
         val tapResult = last.last() as ChatMessage.Tool
         assertTrue(tapResult.content.startsWith("OK: Tapped “Bluetooth”."))
         assertTrue(tapResult.content.contains("[2] button \"Use Bluetooth\" (tap)"))
