@@ -3,13 +3,19 @@ package ai.wakey.android.ui.components
 import ai.wakey.android.core.AssistantPhase
 import ai.wakey.android.core.AssistantUiState
 import ai.wakey.android.ui.theme.WakeyColors
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -53,7 +59,7 @@ import androidx.compose.ui.unit.dp
 
 /** True while there is something for Stop to cancel. */
 val AssistantUiState.isBusy: Boolean
-    get() = phase in BUSY_PHASES || currentAction != null || pendingConfirmation != null
+    get() = phase in BUSY_PHASES || currentAction != null || pendingConfirmation != null || taskRunning
 
 private val BUSY_PHASES = setOf(AssistantPhase.Hearing, AssistantPhase.Thinking, AssistantPhase.Acting, AssistantPhase.Speaking)
 
@@ -139,15 +145,28 @@ private fun HeroCaption(
         AssistantPhase.Acting -> state.currentAction?.description ?: "Working on it…"
         AssistantPhase.Speaking -> "Speaking…"
     }
-    Text(
-        text,
+    // Captions slide in as the step changes; a live transcript updates in place instead.
+    AnimatedContent(
+        targetState = text,
         modifier = modifier,
-        style = if (hearing && state.liveTranscript.isNotBlank()) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
-        color = if (hearing) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = textAlign,
-        maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis,
-    )
+        contentKey = { if (hearing) AssistantPhase.Hearing else it },
+        contentAlignment = if (textAlign == TextAlign.Center) Alignment.Center else Alignment.CenterStart,
+        transitionSpec = {
+            (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 3 }) togetherWith
+                (fadeOut(tween(120)) + slideOutVertically(tween(120)) { -it / 3 }) using SizeTransform(clip = false)
+        },
+        label = "heroCaption",
+    ) { caption ->
+        Text(
+            caption,
+            modifier = Modifier.fillMaxWidth(),
+            style = if (hearing && state.liveTranscript.isNotBlank()) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+            color = if (hearing) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = textAlign,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 /**

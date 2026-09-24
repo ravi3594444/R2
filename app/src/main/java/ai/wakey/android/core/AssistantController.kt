@@ -199,15 +199,21 @@ class AssistantController(
         }
     }
 
+    /**
+     * From the visible UI: the voice service doesn't survive Wakey being closed, and Android only
+     * lets a visible app restart it, so it comes back whenever Wakey opens with the button on.
+     */
+    fun resumeFloatingButton(context: Context) {
+        if (settingsRepo.current.floatingButton && !_state.value.wakeServiceRunning && !WakeService.isRunning) WakeService.start(context)
+    }
+
     /** Called by [WakeService] once it is in the foreground. Returns false if it has nothing to do. */
     fun onWakeServiceStarted(): Boolean {
-        _state.update { it.copy(wakeServiceRunning = true) }
-        val wakeWordFailed = wakeWordWanted && !startWakeWord()
         val buttonWaiting = listenWhenReady != null
-        if (wakeWordFailed && !settingsRepo.current.floatingButton && !buttonWaiting) {
-            _state.update { it.copy(wakeServiceRunning = false) }
-            return false
-        }
+        val wakeWord = wakeWordWanted && startWakeWord()
+        // Switched off while starting, or the wake word failed with nothing else needing the service.
+        if (!wakeWord && !settingsRepo.current.floatingButton && !buttonWaiting) return false
+        _state.update { it.copy(wakeServiceRunning = true) }
         if (buttonWaiting) {
             listenWhenReady?.cancel()
             listenWhenReady = null
@@ -464,7 +470,7 @@ class AssistantController(
         sessionToken++
         audio.stopCommandStream()
         _state.update {
-            it.copy(liveTranscript = "", pushToTalkActive = false, phase = if (it.phase == AssistantPhase.Hearing) restingPhase() else it.phase)
+            it.copy(liveTranscript = "", pushToTalkActive = false, phase = if (it.phase == AssistantPhase.Hearing) busyPhase(it) else it.phase)
         }
         // Queued tasks wait while the user talks. Posted, so a request heard just now starts first.
         scope.launch(Dispatchers.Main) { runNextIfIdle() }
@@ -532,7 +538,10 @@ class AssistantController(
             var isError = false
             try {
                 _state.update {
-                    it.copy(phase = AssistantPhase.Thinking, recentActions = emptyList(), currentAction = null, taskEntryId = requestEntry)
+                    it.copy(
+                        phase = AssistantPhase.Thinking, recentActions = emptyList(), currentAction = null,
+                        taskEntryId = requestEntry, taskRunning = true,
+                    )
                 }
                 val fast = FastCommandRouter.route(task.text)
                 if (fast != null) {
@@ -561,17 +570,20 @@ class AssistantController(
                     isError = result.status == AgentStatus.Failed || result.status == AgentStatus.Timeout
                     if (result.status == AgentStatus.Cancelled) {
                         harness.finish(task.id, TaskStatus.Cancelled, null)
+                        _state.update { it.copy(taskRunning = false) }
                         return@launch
                     }
                 }
             } catch (e: CancellationException) {
                 harness.finish(task.id, TaskStatus.Cancelled, null)
+                _state.update { it.copy(taskRunning = false) }
                 throw e
             } catch (e: Exception) {
                 reply = "Something went wrong: ${e.message ?: e.javaClass.simpleName}"
                 isError = true
             }
             harness.finish(task.id, if (isError) TaskStatus.Failed else TaskStatus.Done, reply)
+            _state.update { it.copy(taskRunning = false) }
             val entryId = addEntry(Speaker.Wakey, reply, isError = isError)
             // Nobody asked just now, so the reply may go unheard.
             if (source == InputSource.Scheduled && !WakeyApp.isVisible) notifications.showTaskResult(task, reply, isError)
@@ -691,7 +703,7 @@ class AssistantController(
         notifications.cancelTask(id)
         if (harness.board.value.running?.id == id && taskJob?.isActive == true) {
             cancelWork()
-            _state.update { it.copy(phase = restingPhase(), currentAction = null) }
+            _state.update { it.copy(phase = if (session != null) AssistantPhase.Hearing else restingPhase(), currentAction = null, taskRunning = false) }
         } else {
             harness.cancel(id)
         }
@@ -734,7 +746,8 @@ class AssistantController(
     private suspend fun speakReply(reply: String, languages: List<String>, clock: TurnClock, entryId: Long, ownsPhase: Boolean = true) {
         val s = settingsRepo.current
         if (s.speakReplies && reply.isNotBlank()) {
-            if (ownsPhase) _state.update { it.copy(phase = AssistantPhase.Speaking) }
+            // The user may already be talking again (barge-in); their turn keeps the screen.
+            if (ownsPhase && session == null) _state.update { it.copy(phase = AssistantPhase.Speaking) }
             try {
                 speaker.speak(reply, languageTagFor(reply, languages)) {
                     clock.replyStartAt = SystemClock.elapsedRealtime()
@@ -749,7 +762,12 @@ class AssistantController(
         val timings = clock.toTimings()
         _state.update { st ->
             val timed = st.copy(lastTimings = timings, entries = st.entries.map { if (it.id == entryId) it.copy(timings = timings) else it })
-            if (ownsPhase) timed.copy(phase = restingPhase(), currentAction = null) else timed
+            when {
+                // A queued task may have started while this was spoken; its phase and step stay.
+                !ownsPhase || st.taskRunning -> timed
+                st.phase == AssistantPhase.Hearing -> timed.copy(currentAction = null)
+                else -> timed.copy(phase = busyPhase(timed), currentAction = null)
+            }
         }
     }
 
@@ -762,7 +780,12 @@ class AssistantController(
                 val others = st.recentActions.filterNot { it.step == action.step && it.toolName == action.toolName }
                 st.copy(
                     // Once acting, stay acting between steps: the step list shows the thinking and the orb doesn't flicker.
-                    phase = if (action.result == null || st.phase == AssistantPhase.Acting) AssistantPhase.Acting else AssistantPhase.Thinking,
+                    // While the user talks over a running task, their turn keeps the screen.
+                    phase = when {
+                        st.phase == AssistantPhase.Hearing -> AssistantPhase.Hearing
+                        action.result == null || st.phase == AssistantPhase.Acting -> AssistantPhase.Acting
+                        else -> AssistantPhase.Thinking
+                    },
                     currentAction = action,
                     recentActions = (others + action).takeLast(MAX_RECENT_ACTIONS),
                 )
@@ -793,7 +816,7 @@ class AssistantController(
         notifications.showConfirmation(id, request.question, request.detail)
         return try {
             if (settingsRepo.current.speakReplies) {
-                _state.update { it.copy(phase = AssistantPhase.Speaking) }
+                if (session == null) _state.update { it.copy(phase = AssistantPhase.Speaking) }
                 try {
                     speaker.speak(request.question + " Say yes or no, or tap Approve.", null)
                 } catch (e: CancellationException) {
@@ -815,7 +838,14 @@ class AssistantController(
                 confirmSession = null
                 pendingConfirm = null
                 notifications.cancelConfirmation(id)
-                _state.update { it.copy(pendingConfirmation = null, phase = previousPhase) }
+                _state.update {
+                    val phase = when {
+                        session != null -> AssistantPhase.Hearing
+                        previousPhase == AssistantPhase.Hearing -> busyPhase(it)
+                        else -> previousPhase
+                    }
+                    it.copy(pendingConfirmation = null, phase = phase)
+                }
             }
         }
     }
@@ -854,7 +884,7 @@ class AssistantController(
         listenWhenReady = null
         _state.update {
             it.copy(
-                phase = restingPhase(), currentAction = null, liveTranscript = "", pushToTalkActive = false,
+                phase = restingPhase(), currentAction = null, liveTranscript = "", pushToTalkActive = false, taskRunning = false,
                 statusMessage = if (silent) it.statusMessage else "Stopped.", statusIsError = false,
             )
         }
@@ -936,6 +966,13 @@ class AssistantController(
     // ------------------------------------------------------------------ internals
 
     private fun restingPhase() = if (_state.value.wakeWordEnabled) AssistantPhase.WakeListening else AssistantPhase.Idle
+
+    /** The phase to return to after listening or speaking: the running task's, else resting. */
+    private fun busyPhase(s: AssistantUiState): AssistantPhase = when {
+        !s.taskRunning -> if (s.wakeWordEnabled) AssistantPhase.WakeListening else AssistantPhase.Idle
+        s.currentAction != null -> AssistantPhase.Acting
+        else -> AssistantPhase.Thinking
+    }
 
     private fun addEntry(speaker: Speaker, text: String, source: InputSource? = null, isError: Boolean = false): Long {
         val id = ids.getAndIncrement()

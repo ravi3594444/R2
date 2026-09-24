@@ -2,6 +2,7 @@ package ai.wakey.android.ui
 
 import ai.wakey.android.accessibility.AccessibilityStatus
 import android.Manifest
+import android.app.AlarmManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -31,6 +32,8 @@ data class SetupStatus(
     val notifications: Boolean,
     val screenControl: Boolean,
     val batteryUnrestricted: Boolean,
+    /** Scheduled tasks, reminders and alarms fire on time (Android 12 lets users revoke this). */
+    val exactAlarms: Boolean = true,
 ) {
     /** The main screen's "Setup needed" card covers only what blocks voice or phone control. */
     val needsAttention: Boolean get() = !microphone || !screenControl
@@ -42,6 +45,7 @@ data class SetupStatus(
             screenControl = AccessibilityStatus.isEnabled(context),
             batteryUnrestricted = context.getSystemService(PowerManager::class.java)
                 ?.isIgnoringBatteryOptimizations(context.packageName) ?: true,
+            exactAlarms = context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: true,
         )
     }
 }
@@ -156,6 +160,12 @@ class WakeySetup internal constructor(private val context: Context) {
 
     fun openAccessibilitySettings() {
         open(AccessibilityStatus.settingsIntent())
+    }
+
+    /** Android 12's "Alarms & reminders" switch for Wakey; later versions grant it with the app. */
+    fun openExactAlarmSettings() {
+        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.fromParts("package", context.packageName, null))
+        if (!open(intent)) openAppSettings()
     }
 
     /** The system list of battery-optimisation exemptions; some phones lack it, so fall back to App info. */

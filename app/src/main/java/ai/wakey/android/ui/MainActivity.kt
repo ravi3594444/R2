@@ -31,6 +31,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -79,9 +81,16 @@ private fun WakeyRoot(controller: AssistantController, listenRequests: StateFlow
     val micLevelFlow = remember(controller) { controller.state.map { it.micLevel }.distinctUntilChanged() }
     val micLevel = micLevelFlow.collectAsStateWithLifecycle(0f)
     val settings by controller.settings.collectAsStateWithLifecycle()
+    val tasks by controller.tasks.collectAsStateWithLifecycle()
     val setup = rememberWakeySetup()
     var screen by rememberSaveable { mutableStateOf(Screen.Main) }
     val listenRequest by listenRequests.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // The floating button talks through the voice service, which only a visible app may start.
+    LifecycleResumeEffect(settings.floatingButton, settings.onboardingDone, setup.status.microphone) {
+        if (settings.onboardingDone && setup.status.microphone) controller.resumeFloatingButton(context)
+        onPauseOrDispose {}
+    }
     LaunchedEffect(listenRequest) {
         if (listenRequest > 0 && settings.onboardingDone) {
             screen = Screen.Main
@@ -112,6 +121,7 @@ private fun WakeyRoot(controller: AssistantController, listenRequests: StateFlow
                         WakeyScreen(
                             controller = controller,
                             state = state,
+                            tasks = tasks,
                             micLevel = { micLevel.value },
                             settings = settings,
                             setup = setup,

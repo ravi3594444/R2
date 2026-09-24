@@ -95,6 +95,11 @@ data class AssistantUiState(
     val recentActions: List<AgentActionInfo> = emptyList(),
     /** The user entry whose task [recentActions] belong to; the step list is shown under it. */
     val taskEntryId: Long? = null,
+    /**
+     * A task is being carried out (not its spoken reply). It can run while [phase] is Hearing: the
+     * user may talk to Wakey, e.g. "… after this", without stopping it.
+     */
+    val taskRunning: Boolean = false,
     val pendingConfirmation: PendingConfirmation? = null,
     /** Short status line, e.g. "No internet — using direct commands only". */
     val statusMessage: String? = null,

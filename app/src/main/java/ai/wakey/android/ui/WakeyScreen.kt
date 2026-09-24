@@ -6,7 +6,7 @@ import ai.wakey.android.core.AssistantController
 import ai.wakey.android.core.AssistantPhase
 import ai.wakey.android.core.AssistantUiState
 import ai.wakey.android.core.Speaker
-import ai.wakey.android.ui.components.ActionCard
+import ai.wakey.android.tasks.TaskBoard
 import ai.wakey.android.ui.components.AssistantHero
 import ai.wakey.android.ui.components.ChatEntryRow
 import ai.wakey.android.ui.components.ConversationHint
@@ -17,9 +17,12 @@ import ai.wakey.android.ui.components.PhaseChip
 import ai.wakey.android.ui.components.QuickVoiceControls
 import ai.wakey.android.ui.components.SetupNeededCard
 import ai.wakey.android.ui.components.StatusBanner
+import ai.wakey.android.ui.components.StepTimeline
 import ai.wakey.android.ui.components.SwitchRow
+import ai.wakey.android.ui.components.TasksCard
 import ai.wakey.android.ui.components.VoicePickerSheet
 import ai.wakey.android.ui.components.rememberVoiceCatalog
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -33,6 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Lock
@@ -64,14 +68,17 @@ private val EXAMPLES = listOf(
     "Open YouTube",
     "Turn on the flashlight",
     "Open Settings and find Bluetooth",
+    "Remind me to stretch in 10 minutes",
+    "Wake me up at 7 am",
     "Open Chrome and search for cats",
 )
 
-/** The dashboard: orb and talk controls on top, then setup, quick controls, the task and the conversation. */
+/** The dashboard: orb and talk controls on top, then setup, quick controls, tasks and the conversation. */
 @Composable
 fun WakeyScreen(
     controller: AssistantController,
     state: AssistantUiState,
+    tasks: TaskBoard,
     micLevel: () -> Float,
     settings: WakeySettings,
     setup: WakeySetup,
@@ -88,6 +95,17 @@ fun WakeyScreen(
     val setWakeListening = { enabled: Boolean ->
         if (enabled) setup.withMicrophone(forWakeWord = true) { controller.setWakeListening(context, true) }
         else controller.setWakeListening(context, false)
+    }
+    val setFloatingButton = { enabled: Boolean ->
+        if (enabled) {
+            // The button talks through the voice service, which needs the microphone.
+            setup.withMicrophone(forWakeWord = true) {
+                controller.setFloatingButton(context, true)
+                if (!setup.status.screenControl) setup.openAccessibilitySettings()
+            }
+        } else {
+            controller.setFloatingButton(context, false)
+        }
     }
     val setEngine = { engine: TtsEngine -> controller.updateSettings { it.copy(ttsEngine = engine) } }
     val preview = { controller.previewVoice() }
@@ -122,10 +140,11 @@ fun WakeyScreen(
                 )
                 val showSetupReminder = setup.status.needsAttention && !setupReminderHidden
                 val showHint = state.entries.isEmpty()
+                val showTasks = tasks.pendingCount > 0 || tasks.recent.isNotEmpty()
                 Feed(
                     state = state,
                     modifier = Modifier.weight(1f),
-                    headerCount = 1 + (if (showSetupReminder) 1 else 0) + (if (showHint) 1 else 0),
+                    headerCount = 1 + listOf(showSetupReminder, showTasks, showHint).count { it },
                     header = {
                         if (showSetupReminder) {
                             item(key = "setup") {
@@ -141,8 +160,10 @@ fun WakeyScreen(
                         item(key = "controls") {
                             QuickControlsCard(
                                 settings = settings,
-                                wakeRunning = state.wakeServiceRunning,
+                                wakeWordOn = state.wakeWordEnabled,
                                 onWakeListeningChange = setWakeListening,
+                                screenControl = setup.status.screenControl,
+                                onFloatingButtonChange = setFloatingButton,
                                 voiceLabel = catalog.currentLabel(settings),
                                 speaking = speaking,
                                 onEngineChange = setEngine,
@@ -150,6 +171,18 @@ fun WakeyScreen(
                                 onPreview = preview,
                                 onStopPreview = stopPreview,
                             )
+                        }
+                        if (showTasks) {
+                            item(key = "tasks") {
+                                TasksCard(
+                                    board = tasks,
+                                    exactAlarms = setup.status.exactAlarms,
+                                    onCancel = controller::cancelTask,
+                                    onRunNow = controller::runTaskNow,
+                                    onClearRecent = controller::clearFinishedTasks,
+                                    onAllowExactAlarms = setup::openExactAlarmSettings,
+                                )
+                            }
                         }
                         if (showHint) {
                             item(key = "hint") { ConversationHint(EXAMPLES, onExample = controller::submitText) }
@@ -211,8 +244,10 @@ private fun WakeyTopBar(phase: AssistantPhase, onOpenSettings: () -> Unit) {
 @Composable
 private fun QuickControlsCard(
     settings: WakeySettings,
-    wakeRunning: Boolean,
+    wakeWordOn: Boolean,
     onWakeListeningChange: (Boolean) -> Unit,
+    screenControl: Boolean,
+    onFloatingButtonChange: (Boolean) -> Unit,
     voiceLabel: String,
     speaking: Boolean,
     onEngineChange: (TtsEngine) -> Unit,
@@ -228,8 +263,14 @@ private fun QuickControlsCard(
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SwitchRow(
                 title = "Listen for “${settings.wakePhrase}”",
-                checked = wakeRunning,
+                checked = wakeWordOn,
                 onCheckedChange = onWakeListeningChange,
+            )
+            SwitchRow(
+                title = "Floating Wakey button",
+                subtitle = floatingButtonNote(settings.floatingButton, screenControl),
+                checked = settings.floatingButton,
+                onCheckedChange = onFloatingButtonChange,
             )
             NoteText(PRIVACY_LINE, icon = Icons.Rounded.Lock)
             HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
@@ -247,10 +288,15 @@ private fun QuickControlsCard(
     }
 }
 
+internal fun floatingButtonNote(enabled: Boolean, screenControl: Boolean): String = when {
+    enabled && !screenControl -> "Turn on Wakey screen control to show it."
+    else -> "Tap it in any app to talk, no wake word needed. Hold it to see your tasks."
+}
+
 /**
- * Header cards, then the conversation. The current task's action card sits right after the
- * request that started it, and the list follows the newest entry, step and timing row.
- * [headerCount] is the number of items [header] adds, so the scroll target is known up front.
+ * Header cards, then the conversation. A task's steps sit right after the request that started it,
+ * and the list follows new entries, steps and timing rows. [headerCount] is the number of items
+ * [header] adds, so the scroll target is known up front.
  */
 @Composable
 private fun Feed(
@@ -261,13 +307,18 @@ private fun Feed(
 ) {
     val listState = rememberLazyListState()
     val entries = state.entries
-    val showActions = state.currentAction != null || state.recentActions.isNotEmpty()
-    val actionsAfter = entries.indexOfLast { it.speaker == Speaker.User }
-    val itemCount = headerCount + entries.size + if (showActions) 1 else 0
+    val steps = state.recentActions
+    val showSteps = state.currentAction != null || steps.isNotEmpty()
+    val stepsAfter = entries.indexOfFirst { it.id == state.taskEntryId }.takeIf { it >= 0 }
+        ?: entries.indexOfLast { it.speaker == Speaker.User }
+    val itemCount = headerCount + entries.size + if (showSteps) 1 else 0
     val last = entries.lastOrNull()
+    val running = state.taskRunning
 
-    LaunchedEffect(itemCount, last?.id, last?.timings != null, state.currentAction) {
-        if (entries.isNotEmpty()) listState.animateScrollToItem(itemCount - 1)
+    // Only structural changes scroll: a new entry, step or timing row, or a step finishing.
+    val finishedSteps = steps.count { it.result != null }
+    LaunchedEffect(itemCount, last?.id, last?.timings != null, steps.size, finishedSteps) {
+        if (entries.isNotEmpty()) listState.revealEnd()
     }
 
     LazyColumn(
@@ -277,14 +328,24 @@ private fun Feed(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         header()
-        if (showActions && actionsAfter < 0) {
-            item(key = "actions") { ActionCard(state.currentAction, state.recentActions) }
+        if (showSteps && stepsAfter < 0) {
+            item(key = "steps") { StepTimeline(steps, running) }
         }
         entries.forEachIndexed { index, entry ->
             item(key = entry.id) { ChatEntryRow(entry) }
-            if (showActions && index == actionsAfter) {
-                item(key = "actions") { ActionCard(state.currentAction, state.recentActions) }
+            if (showSteps && index == stepsAfter) {
+                item(key = "steps") { StepTimeline(steps, running) }
             }
         }
     }
+}
+
+/** Smoothly scrolls so the end of the last item shows, even when it is taller than the screen. */
+private suspend fun LazyListState.revealEnd() {
+    val lastIndex = layoutInfo.totalItemsCount - 1
+    if (lastIndex < 0) return
+    if (layoutInfo.visibleItemsInfo.none { it.index == lastIndex }) animateScrollToItem(lastIndex)
+    val item = layoutInfo.visibleItemsInfo.firstOrNull { it.index == lastIndex } ?: return
+    val overflow = item.offset + item.size - (layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding)
+    if (overflow > 0) animateScrollBy(overflow.toFloat())
 }

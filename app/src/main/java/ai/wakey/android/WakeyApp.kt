@@ -20,6 +20,9 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -32,8 +35,15 @@ class WakeyApp : Application() {
         super.onCreate()
         instance = this
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
-            override fun onActivityStarted(activity: Activity) { startedActivities++ }
-            override fun onActivityStopped(activity: Activity) { startedActivities-- }
+            override fun onActivityStarted(activity: Activity) {
+                startedActivities++
+                visibility.value = true
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                startedActivities--
+                visibility.value = startedActivities > 0
+            }
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
             override fun onActivityResumed(activity: Activity) = Unit
             override fun onActivityPaused(activity: Activity) = Unit
@@ -49,9 +59,13 @@ class WakeyApp : Application() {
         val graph: AppGraph get() = instance.graph
 
         @Volatile private var startedActivities = 0
+        private val visibility = MutableStateFlow(false)
 
         /** True while a Wakey screen is visible; Android only lets visible apps start activities freely. */
         val isVisible: Boolean get() = startedActivities > 0
+
+        /** [isVisible] as a flow, for the overlays, which hide while Wakey's own screens show. */
+        val visible: StateFlow<Boolean> = visibility.asStateFlow()
     }
 }
 
