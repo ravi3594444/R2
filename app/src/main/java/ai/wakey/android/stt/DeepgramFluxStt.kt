@@ -28,6 +28,7 @@ class DeepgramFluxStt internal constructor(
     private val http: OkHttpClient,
     private val apiKey: () -> String?,
     private val endpoint: HttpUrl,
+    private val turns: FluxTurnTuning = FluxTurnTuning(),
 ) : SpeechToText {
     constructor(http: OkHttpClient, apiKey: () -> String?) : this(http, apiKey, LISTEN_ENDPOINT)
 
@@ -92,7 +93,7 @@ class DeepgramFluxStt internal constructor(
     private fun currentKey(): String? = runCatching(apiKey).getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
 
     private fun listenRequest(config: SttConfig, key: String): Request = Request.Builder()
-        .url(fluxListenUrl(endpoint, config))
+        .url(fluxListenUrl(endpoint, config, turns))
         .header("Authorization", "Token $key")
         .build()
 
@@ -140,10 +141,15 @@ class DeepgramFluxStt internal constructor(
         val LISTEN_ENDPOINT = "https://api.deepgram.com/v2/listen".toHttpUrl()
 
         /**
-         * End-of-turn tuning for short spoken commands. `eot_threshold` stays at Flux's default 0.7:
-         * commands such as "open Chrome and search for cats" often pause mid-sentence, and lower
-         * values cut them off. `eot_timeout_ms` drops from 5000 to 3000 so that when the model is never
-         * confident (mumbled or code-mixed speech) the turn still ends 3 s after the user goes quiet.
+         * End-of-turn tuning for short spoken commands, measured on 22 Indian-English and Hinglish
+         * command clips (FluxCommandSetLiveTest, hints en+hi):
+         * - `eot_threshold` stays at Flux's default 0.7: speech end → final was 850 ms median, 1.5 s
+         *   worst. 0.65 and 0.6 saved about 200 ms but ended "YouTube kholo" after "YouTube": Hinglish
+         *   puts the verb last, so the noun alone already sounds finished. 0.8 added 330 ms and fixed
+         *   nothing.
+         * - `eot_timeout_ms` is 3000 rather than Flux's 5000, so that when the model is never
+         *   confident (mumbled or code-mixed speech) the turn still ends 3 s after the user goes quiet.
+         *   Every measured turn ended on the model's own confidence first, 1500 changed nothing.
          * Eager end-of-turn stays off because nothing speculates on unfinished turns.
          */
         const val EOT_THRESHOLD = "0.7"
@@ -156,21 +162,32 @@ class DeepgramFluxStt internal constructor(
     }
 }
 
+/** Flux end-of-turn parameters; the defaults are the tuned values documented on [DeepgramFluxStt]. */
+internal data class FluxTurnTuning(
+    val eotThreshold: String = DeepgramFluxStt.EOT_THRESHOLD,
+    val eotTimeoutMs: Int = DeepgramFluxStt.EOT_TIMEOUT_MS,
+)
+
 /**
  * The Flux listen URL for [config]. `language_hint` and `keyterm` are repeated once per value;
  * hints are sent only to multilingual models because Flux rejects them elsewhere with HTTP 400.
+ *
+ * On the command clips behind [DeepgramFluxStt.EOT_THRESHOLD], hints en+hi transcribed the same as
+ * no hints, while en alone turned Hinglish verbs into English words ("Torch jalao" → "George
+ * July"); keyterms left `flux-general-multi` transcripts unchanged, word for word.
  */
-internal fun fluxListenUrl(endpoint: HttpUrl, config: SttConfig): HttpUrl = endpoint.newBuilder().apply {
-    addQueryParameter("model", config.model)
-    addQueryParameter("encoding", "linear16")
-    addQueryParameter("sample_rate", config.sampleRate.toString())
-    addQueryParameter("eot_threshold", DeepgramFluxStt.EOT_THRESHOLD)
-    addQueryParameter("eot_timeout_ms", DeepgramFluxStt.EOT_TIMEOUT_MS.toString())
-    if ("-multi" in config.model) {
-        config.languageHints.cleaned().forEach { addQueryParameter("language_hint", it) }
-    }
-    config.keyterms.cleaned().forEach { addQueryParameter("keyterm", it) }
-}.build()
+internal fun fluxListenUrl(endpoint: HttpUrl, config: SttConfig, turns: FluxTurnTuning = FluxTurnTuning()): HttpUrl =
+    endpoint.newBuilder().apply {
+        addQueryParameter("model", config.model)
+        addQueryParameter("encoding", "linear16")
+        addQueryParameter("sample_rate", config.sampleRate.toString())
+        addQueryParameter("eot_threshold", turns.eotThreshold)
+        addQueryParameter("eot_timeout_ms", turns.eotTimeoutMs.toString())
+        if ("-multi" in config.model) {
+            config.languageHints.cleaned().forEach { addQueryParameter("language_hint", it) }
+        }
+        config.keyterms.cleaned().forEach { addQueryParameter("keyterm", it) }
+    }.build()
 
 private fun List<String>.cleaned(): List<String> = map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 

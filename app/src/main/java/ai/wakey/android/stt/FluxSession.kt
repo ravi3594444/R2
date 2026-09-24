@@ -9,6 +9,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** The WebSocket as a [FluxSession] sees it; lets tests drive a session without a network. */
@@ -41,19 +42,23 @@ internal interface FluxSocket {
  * actor, so session state needs no locks and listener callbacks arrive one at a time, in order.
  *
  * Lifecycle: audio pushed while connecting is held (up to [MAX_PENDING_MS], oldest dropped) and
- * flushed on open; a connection not open within [CONNECT_TIMEOUT_MS] is a Network error. The first non-blank `EndOfTurn` is the final transcript; the session then sends
- * `CloseStream` and closes. [endTurn] and [close] flush the partial frame and send
+ * flushed on open. A connection not open after [CONNECT_RETRY_MS] gets a second attempt alongside
+ * it, since a stalled handshake rarely recovers; whichever opens first is used and the other is
+ * dropped. None open within [CONNECT_TIMEOUT_MS] is a Network error. The first non-blank
+ * `EndOfTurn` is the final transcript; the session then sends `CloseStream` and closes. [endTurn] and [close] flush the partial frame and send
  * `ForceEndTurn` + `CloseStream` (or just `CloseStream`). Flux then either answers with an
  * `EndOfTurn` or, when no turn was active yet (nothing said, or speech still being decoded), decodes
  * the remaining audio and hangs up; the latest turn update is then the final transcript, possibly
  * empty. Exactly one final transcript or error is reported, followed by one `onClosed`, unless the
  * session is cancelled.
  *
- * `transcriptionMs` maps the last word's end time (seconds on the stream's audio clock) to the
- * moment the 80 ms frame containing it was pushed to [sendPcm], and measures from there to the
- * arrival of the final message. Live microphone audio is pushed as it is captured, so this
- * approximates "user stopped talking → final" at frame resolution; for audio held while
- * connecting it includes the rest of the connection wait, which the user also experiences.
+ * `transcriptionMs` runs from the push of the 80 ms frame where speech ended to the arrival of the
+ * final message. Speech ends at the earlier of the last speech-loud frame (see
+ * [AudioTimeline.lastSpeechPushedAt]) and the frame holding the last word's end time: Flux's words
+ * are contiguous segments, and the last one runs on into the silence, measured 0.5–1 s past the
+ * voice on spoken commands. Live microphone audio is pushed as it is captured, so this approximates
+ * "user stopped talking → final" at frame resolution; for audio held while connecting it includes
+ * the rest of the connection wait, which the user also experiences.
  */
 internal class FluxSession(
     config: SttConfig,
@@ -68,10 +73,13 @@ internal class FluxSession(
         class Audio(val samples: ShortArray, val pushedAt: Long) : Event
         data object EndTurn : Event
         data object Close : Event
-        class Opened(val at: Long) : Event
-        class Message(val text: String, val at: Long) : Event
-        class Closed(val code: Int, val reason: String, val at: Long) : Event
-        class Failed(val error: SttError) : Event
+        class Opened(val at: Long, val attempt: Int) : Event
+        class Message(val text: String, val at: Long, val attempt: Int) : Event
+        class Closed(val code: Int, val reason: String, val at: Long, val attempt: Int) : Event
+
+        /** [attempt] is [NO_ATTEMPT] for a failure before any connection. */
+        class Failed(val error: SttError, val attempt: Int) : Event
+        data object RetryConnect : Event
         data object ConnectTimedOut : Event
         data object CloseTimedOut : Event
     }
@@ -85,7 +93,10 @@ internal class FluxSession(
 
     @Volatile private var acceptingAudio = true
 
+    /** The connection that opened; [attempts] holds every connection started, in order. */
     @Volatile private var socket: FluxSocket? = null
+    private val attempts = CopyOnWriteArrayList<FluxSocket>()
+    private var connect: ((FluxSocket.Listener) -> FluxSocket)? = null
 
     // Confined to the actor.
     private val frameSamples = config.sampleRate * CHUNK_MS / 1000
@@ -100,29 +111,39 @@ internal class FluxSession(
     private var latest: FluxMessage.TurnInfo? = null
     private var lastPartial = ""
     private var closeTimeout: Job? = null
+    private var opened = NO_ATTEMPT
+    private val failedAttempts = mutableSetOf<Int>()
 
-    private val socketListener = object : FluxSocket.Listener {
+    private fun listenerFor(attempt: Int) = object : FluxSocket.Listener {
         override fun onOpen() {
-            events.trySend(Event.Opened(nanoTime()))
+            events.trySend(Event.Opened(nanoTime(), attempt))
         }
 
         override fun onText(text: String) {
-            events.trySend(Event.Message(text, nanoTime()))
+            events.trySend(Event.Message(text, nanoTime(), attempt))
         }
 
         override fun onClosed(code: Int, reason: String) {
-            events.trySend(Event.Closed(code, reason, nanoTime()))
+            events.trySend(Event.Closed(code, reason, nanoTime(), attempt))
         }
 
         override fun onFailure(error: SttError) {
-            events.trySend(Event.Failed(error))
+            events.trySend(Event.Failed(error, attempt))
         }
     }
 
-    /** Connects through [connect], which must return at once and report progress to its listener. */
+    /**
+     * Connects through [connect], which must return at once and report progress to its listener;
+     * it is called again, with a new listener, if the first connection is slow to open.
+     */
     fun start(connect: (FluxSocket.Listener) -> FluxSocket) {
         startedAt = nanoTime()
-        socket = connect(socketListener)
+        this.connect = connect
+        connectAttempt()
+        scope.launch {
+            delay(CONNECT_RETRY_MS)
+            events.trySend(Event.RetryConnect)
+        }
         scope.launch {
             delay(CONNECT_TIMEOUT_MS)
             events.trySend(Event.ConnectTimedOut)
@@ -132,7 +153,7 @@ internal class FluxSession(
 
     /** Starts a session that reports [error] (asynchronously, like any other failure) and closes. */
     fun startFailed(error: SttError) {
-        events.trySend(Event.Failed(error))
+        events.trySend(Event.Failed(error, NO_ATTEMPT))
         runActor()
     }
 
@@ -159,7 +180,7 @@ internal class FluxSession(
         }
         acceptingAudio = false
         events.close()
-        socket?.cancel()
+        attempts.forEach { it.cancel() }
         scope.cancel()
     }
 
@@ -173,10 +194,13 @@ internal class FluxSession(
             is Event.Audio -> onAudio(event)
             Event.EndTurn -> requestEnd(EndRequest.ForceEndTurn)
             Event.Close -> requestEnd(EndRequest.CloseStream)
-            is Event.Opened -> onOpened(event.at)
-            is Event.Message -> onMessage(event.text, event.at)
-            is Event.Closed -> onSocketClosed(event)
-            is Event.Failed -> if (terminal) finish() else fail(event.error)
+            is Event.Opened -> onOpened(event)
+            is Event.Message -> if (event.attempt == opened) onMessage(event.text, event.at)
+            is Event.Closed -> if (concernsSession(event.attempt)) onSocketClosed(event)
+            is Event.Failed -> if (concernsSession(event.attempt)) {
+                if (terminal) finish() else fail(event.error)
+            }
+            Event.RetryConnect -> if (phase == Phase.Connecting && attempts.size < MAX_CONNECT_ATTEMPTS) connectAttempt()
             Event.ConnectTimedOut -> if (phase == Phase.Connecting) {
                 fail(SttError(SttError.Kind.Network, "Timed out connecting to Deepgram"))
             }
@@ -202,10 +226,36 @@ internal class FluxSession(
         }
     }
 
-    private fun onOpened(at: Long) {
-        if (phase != Phase.Connecting) return
+    private fun connectAttempt() {
+        val attempt = checkNotNull(connect)(listenerFor(attempts.size))
+        attempts += attempt
+        if (cancelled.get()) attempt.cancel()
+    }
+
+    /**
+     * Whether a close or failure of connection [attempt] ends the session: always for the open
+     * connection; for a pending one only when no other attempt is still pending.
+     */
+    private fun concernsSession(attempt: Int): Boolean = when {
+        attempt == NO_ATTEMPT || attempt == opened -> true
+        opened != NO_ATTEMPT -> false
+        else -> {
+            failedAttempts += attempt
+            failedAttempts.size == attempts.size
+        }
+    }
+
+    private fun onOpened(event: Event.Opened) {
+        if (phase != Phase.Connecting) {
+            // A slower attempt that opened after the one in use.
+            if (event.attempt != opened) attempts[event.attempt].cancel()
+            return
+        }
+        opened = event.attempt
+        socket = attempts[event.attempt]
+        attempts.forEachIndexed { i, other -> if (i != opened) other.cancel() }
         phase = Phase.Streaming
-        notify { onConnected((at - startedAt) / NANOS_PER_MS) }
+        notify { onConnected((event.at - startedAt) / NANOS_PER_MS) }
         while (held.isNotEmpty()) held.removeFirst().let { transmit(it.bytes, it.pushedAt) }
         if (endRequest != null) endStream()
     }
@@ -282,8 +332,10 @@ internal class FluxSession(
     private fun deliverFinal(info: FluxMessage.TurnInfo?, at: Long) {
         terminal = true
         acceptingAudio = false
-        val transcriptionMs = info?.lastWordEnd?.let(timeline::pushedAt)
-            ?.let { pushedAt -> ((at - pushedAt) / NANOS_PER_MS).coerceAtLeast(0) }
+        val speechEndAt = info?.takeIf { it.transcript.isNotBlank() }?.let {
+            listOfNotNull(it.lastWordEnd?.let(timeline::pushedAt), timeline.lastSpeechPushedAt()).minOrNull()
+        }
+        val transcriptionMs = speechEndAt?.let { ((at - it) / NANOS_PER_MS).coerceAtLeast(0) }
         notify { onTranscript(info?.transcript.orEmpty(), isFinal = true, languages = info?.languages.orEmpty(), transcriptionMs) }
     }
 
@@ -291,7 +343,7 @@ internal class FluxSession(
         terminal = true
         acceptingAudio = false
         notify { onError(error) }
-        socket?.cancel()
+        attempts.forEach { it.cancel() }
         finish()
     }
 
@@ -304,7 +356,7 @@ internal class FluxSession(
 
     private fun transmit(frame: ByteArray, pushedAt: Long) {
         transport.sendBinary(frame)
-        timeline.record(frame.size / 2, pushedAt)
+        timeline.record(frame.size / 2, pushedAt, pcmRms(frame))
     }
 
     private fun armCloseTimeout() {
@@ -315,7 +367,7 @@ internal class FluxSession(
         }
     }
 
-    /** Only reached after [start] set the socket: socket events and flushes need a connection. */
+    /** Only reached once a connection opened: socket events and flushes need one. */
     private val transport: FluxSocket get() = checkNotNull(socket)
 
     private inline fun notify(callback: SttListener.() -> Unit) {
@@ -326,6 +378,13 @@ internal class FluxSession(
 
     internal companion object {
         const val CHUNK_MS = 80
+
+        /**
+         * Connections to Deepgram usually open in 150–900 ms; one still pending after this is
+         * treated as stalled and a second one is started beside it.
+         */
+        const val CONNECT_RETRY_MS = 2_500L
+        const val MAX_CONNECT_ATTEMPTS = 2
 
         /** Bounds a stalled upgrade, which the client's read timeout alone could leave hanging. */
         const val CONNECT_TIMEOUT_MS = 10_000L
@@ -340,5 +399,6 @@ internal class FluxSession(
         const val CLOSE_TIMEOUT_MS = 3_000L
 
         private const val NANOS_PER_MS = 1_000_000L
+        private const val NO_ATTEMPT = -1
     }
 }

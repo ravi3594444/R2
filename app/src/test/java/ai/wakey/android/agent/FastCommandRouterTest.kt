@@ -75,6 +75,75 @@ class FastCommandRouterTest {
         "open WhatsApp to message mom", "open chrome in incognito", "start a timer",
     )
 
+    // Transcripts below were returned by Deepgram Flux (flux-general-multi, hints en+hi) for TTS clips
+    // of Indian-English and Hinglish commands; see FluxCommandSetLiveTest.
+
+    @Test
+    fun leftoverOrMisheardWakeWordIsIgnored() {
+        // AssistantController.stripWakePhrase removes "Hey," but stops at a misheard "Wakey".
+        assertRoutes(
+            FastCommand.Torch(true),
+            "Becky. Turn on the flashlight.", "Hey, Becky. Turn on the flashlight.", "waking. Turn on the flashlight.",
+            "Hey, Wiki. Turn on the flashlight.", "Vicky, turn on the flashlight", "Hey Wakey, torch jalao",
+            "हे वेकी, टॉर्च जलाओ",
+        )
+        assertRoutes(FastCommand.OpenApp("YouTube"), "Hey Vicky, open YouTube", "Wacky open YouTube", "wakey YouTube kholo")
+        assertRoutes(null, "Becky", "Vicky, call mom")
+    }
+
+    @Test
+    fun mixedScriptHinglishFromFlux() {
+        assertRoutes(FastCommand.Torch(true), "torch जलाओ.", "torch जलाऊ.", "तोड़ जलाओ", "तोड़ जलाओ.", "तोड़ चलाओ", "torch chalao")
+        assertRoutes(
+            FastCommand.Torch(false),
+            "Clashlight band करो.", "Slashlight band करो.", "Flashlight band Karo.", "Flashlight ban Karo.",
+            "flashlight bandh karo", "torch बंद कर दो",
+        )
+    }
+
+    @Test
+    fun misheardEnglishTorchCommands() {
+        assertRoutes(FastCommand.Torch(false), "Turn off the dodge.", "Turn off a torch.", "turn of the torch", "switch of the flashlight")
+        assertRoutes(FastCommand.Torch(true), "torch light on", "turn on the torch light", "phone ki torch jalao")
+    }
+
+    @Test
+    fun misheardHinglishVerbs() {
+        assertRoutes(FastCommand.OpenApp("YouTube"), "YouTube Colo.", "YouTube Colo", "YouTube kolo", "YouTube holo")
+        assertRoutes(FastCommand.OpenApp("Calculator"), "Calculator open Caro", "Calculator kholo please")
+        assertRoutes(FastCommand.OpenApp("WhatsApp"), "WhatsApp open Caro.", "WhatsApp open kar do yaar")
+        assertRoutes(FastCommand.Torch(true), "torch on Caro", "flashlight on kro")
+    }
+
+    @Test
+    fun englishCommandsWrittenInDevanagari() {
+        assertRoutes(FastCommand.Torch(true), "टर्न ऑन द फ्लैशलाइट", "टर्न ऑन टॉर्च", "फ्लैशलाइट ऑन", "टॉर्च चालू करो")
+        assertRoutes(FastCommand.Torch(false), "टर्न ऑफ द टॉर्च", "फ्लैशलाइट ऑफ", "फ़्लैशलाइट ऑफ़ करो", "टॉर्च बंद")
+        assertRoutes(FastCommand.OpenApp("कैलकुलेटर"), "ओपन कैलकुलेटर", "कैलकुलेटर ओपन करो")
+        assertRoutes(FastCommand.OpenApp("इंस्टाग्राम"), "ओपन इंस्टाग्राम", "इंस्टाग्राम खोलो प्लीज़")
+        assertRoutes(FastCommand.OpenApp("व्हाट्सएप"), "व्हाट्सएप ओपन करो")
+        assertRoutes(FastCommand.OpenApp("क्रोम"), "क्रोम खोलो")
+        assertRoutes(FastCommand.OpenApp("सेटिंग्स"), "सेटिंग्स ओपन कर दो")
+        assertRoutes(FastCommand.OpenApp("कैमरा"), "कैमरा खोलो ना")
+        assertRoutes(FastCommand.GoHome, "होम स्क्रीन")
+    }
+
+    @Test
+    fun trailingPolitenessIsIgnored() {
+        assertRoutes(FastCommand.Torch(true), "torch jalao yaar", "torch jalao na", "turn on the flashlight please", "torch on karo ji")
+        assertRoutes(FastCommand.Torch(false), "flashlight band karo na yaar", "टॉर्च बंद करो यार")
+        assertRoutes(FastCommand.OpenApp("YouTube"), "YouTube kholo please", "open YouTube thank you", "bhai YouTube khol do")
+    }
+
+    @Test
+    fun multiStepRequestsFromFluxAreNotFast() = assertRoutes(
+        null,
+        "Hey, Wakey. Open Instagram and search for cats.", "Instagram, खोलो और cats search करो.",
+        "Instagram, खोलो और cats. Search करो.", "Instagram Holo or cat search Carol", "Instagram Hole or cat search Carol",
+        "Instagram kholo aur cats search karo", "Instagram kholo or cats search karo", "ओपन इंस्टाग्राम एंड सर्च कैट्स",
+        "ओपन यूट्यूब देन प्ले सॉन्ग्स", "क्या linala or colon?", "YouTube kholo, cats search karo",
+    )
+
     @Test
     fun otherRequestsAreNotFast() = assertRoutes(
         null,
