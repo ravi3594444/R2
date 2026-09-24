@@ -37,6 +37,7 @@ internal fun formatTimingSummary(t: TurnTimings): String = buildList {
     t.firstActionMs?.let { add("first action ${formatDuration(it)}") }
     t.spokenReplyMs?.let { add("voice ${formatDuration(it)}") }
     if (t.steps > 0) add(plural(t.steps, "step", "steps"))
+    if (t.decisionCalls > 0) add(plural(t.decisionCalls, "Jev decision", "Jev decisions"))
     if (t.llmCalls > 0) add(plural(t.llmCalls, "LLM call", "LLM calls"))
     val tokens = t.promptTokens + t.completionTokens
     if (tokens > 0) add("${formatCount(tokens)} ${if (tokens == 1) "token" else "tokens"}")
@@ -56,6 +57,7 @@ internal fun timingDetails(t: TurnTimings): List<Pair<String, String>> {
         "Reply audio starts" to ms(t.spokenReplyMs),
         "Total" to ms(t.totalMs),
         "Agent steps" to t.steps.toString(),
+        "Jev decisions" to t.decisionCalls.toString(),
         "LLM calls" to t.llmCalls.toString(),
         "Tokens (prompt + completion)" to "${t.promptTokens} + ${t.completionTokens}",
     )

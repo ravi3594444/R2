@@ -16,6 +16,8 @@ data class ChatRequest(
     val tools: List<ToolSpec> = emptyList(),
     val maxTokens: Int = 1024,
     val temperature: Double = 0.2,
+    /** Routes related requests to one replica so the provider can reuse the cached prompt prefix. */
+    val sessionId: String? = null,
 )
 
 sealed class ChatMessage {

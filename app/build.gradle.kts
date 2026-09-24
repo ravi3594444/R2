@@ -100,16 +100,18 @@ android {
         applicationId = "ai.wakey.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.2.3"
+        versionCode = 6
+        versionName = "0.3.1-jev"
         buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(""))
         buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(""))
+        buildConfigField("String", "SEED_AIMLAPI_API_KEY", quoted(""))
     }
 
     buildTypes {
         debug {
             buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(secret("FIREWORKS_API_KEY")))
             buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(secret("DEEPGRAM_API_KEY")))
+            buildConfigField("String", "SEED_AIMLAPI_API_KEY", quoted(secret("AIMLAPI_API_KEY")))
             // Shrink (not obfuscate) so the sideload APK stays small; see proguard-rules.pro.
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

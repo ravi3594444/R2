@@ -28,6 +28,8 @@ class SettingsRepository(context: Context) {
         maxAgentSteps = s.maxAgentSteps.coerceIn(1, WakeySettings.MAX_AGENT_STEPS_LIMIT),
         llmBaseUrl = s.llmBaseUrl.trim().trimEnd('/'),
         llmModel = s.llmModel.trim(),
+        decisionBaseUrl = s.decisionBaseUrl.trim().trimEnd('/'),
+        decisionModel = s.decisionModel.trim(),
         deepgramVoice = s.deepgramVoice.trim(),
         sttModel = s.sttModel.trim(),
         wakePhrase = WakeySettings.normalizeWakePhrase(s.wakePhrase),
@@ -48,6 +50,9 @@ class SettingsRepository(context: Context) {
             llmBaseUrl = prefs.getString("llm_base_url", d.llmBaseUrl) ?: d.llmBaseUrl,
             llmModel = prefs.getString("llm_model", d.llmModel) ?: d.llmModel,
             maxAgentSteps = prefs.getInt("max_agent_steps", d.maxAgentSteps),
+            useFastDecisions = prefs.getBoolean("use_fast_decisions", d.useFastDecisions),
+            decisionBaseUrl = prefs.getString("decision_base_url", d.decisionBaseUrl) ?: d.decisionBaseUrl,
+            decisionModel = prefs.getString("decision_model", d.decisionModel) ?: d.decisionModel,
             onboardingDone = prefs.getBoolean("onboarding_done", d.onboardingDone),
             wakeListeningWanted = prefs.getBoolean("wake_listening_wanted", d.wakeListeningWanted),
             wakeSound = prefs.getBoolean("wake_sound", d.wakeSound),
@@ -68,6 +73,9 @@ class SettingsRepository(context: Context) {
             .putString("llm_base_url", s.llmBaseUrl)
             .putString("llm_model", s.llmModel)
             .putInt("max_agent_steps", s.maxAgentSteps)
+            .putBoolean("use_fast_decisions", s.useFastDecisions)
+            .putString("decision_base_url", s.decisionBaseUrl)
+            .putString("decision_model", s.decisionModel)
             .putBoolean("onboarding_done", s.onboardingDone)
             .putBoolean("wake_listening_wanted", s.wakeListeningWanted)
             .putBoolean("wake_sound", s.wakeSound)

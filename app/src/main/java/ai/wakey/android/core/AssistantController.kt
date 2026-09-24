@@ -16,6 +16,7 @@ import ai.wakey.android.config.SettingsRepository
 import ai.wakey.android.config.TtsEngine
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.llm.ChatModel
+import ai.wakey.android.llm.DecisionModel
 import ai.wakey.android.service.Notifications
 import ai.wakey.android.service.WakeService
 import ai.wakey.android.stt.SpeechToText
@@ -70,6 +71,7 @@ class AssistantController(
     private val stt: SpeechToText,
     private val speaker: RoutingSpeaker,
     private val chatModel: ChatModel,
+    private val decisionModel: DecisionModel,
     private val device: DeviceActions,
     private val agent: AgentLoop,
     private val notifications: Notifications,
@@ -516,6 +518,7 @@ class AssistantController(
                     val result = agent.run(text, agentListener(clock))
                     clock.steps = result.steps
                     clock.llmCalls = result.llmCalls
+                    clock.decisionCalls = result.decisionCalls
                     clock.promptTokens = result.promptTokens
                     clock.completionTokens = result.completionTokens
                     result.firstActionAtMs?.let { clock.firstActionAt = it }
@@ -689,6 +692,14 @@ class AssistantController(
         "Failed: ${e.message}"
     }
 
+    suspend fun testJevConnection(): String = try {
+        decisionModel.testConnection()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        "Failed: ${e.message}"
+    }
+
     suspend fun testDeepgramConnection(): String = try {
         (stt as? ai.wakey.android.stt.DeepgramFluxStt)?.testConnection() ?: "Not available"
     } catch (e: CancellationException) {
@@ -776,6 +787,7 @@ class AssistantController(
         var route = ""
         var steps = 0
         var llmCalls = 0
+        var decisionCalls = 0
         var promptTokens = 0
         var completionTokens = 0
 
@@ -791,6 +803,7 @@ class AssistantController(
             route = route,
             steps = steps,
             llmCalls = llmCalls,
+            decisionCalls = decisionCalls,
             promptTokens = promptTokens,
             completionTokens = completionTokens,
         )

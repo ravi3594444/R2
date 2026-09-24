@@ -37,6 +37,8 @@ data class TurnTimings(
     val route: String = "",
     val steps: Int = 0,
     val llmCalls: Int = 0,
+    /** Steps decided by the fast decision model (Jev). */
+    val decisionCalls: Int = 0,
     val promptTokens: Int = 0,
     val completionTokens: Int = 0,
 )

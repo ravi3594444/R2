@@ -10,9 +10,12 @@ import kotlin.math.roundToInt
 
 /** Turns an accessibility screenshot into the small JPEG the vision model receives. */
 object ScreenshotEncoder {
-    /** Longest side of the JPEG, in pixels. */
-    const val MAX_SIDE = 1280
-    private const val JPEG_QUALITY = 70
+    /**
+     * Longest side of the JPEG, in pixels. Small enough to keep the vision request fast, large enough
+     * for tap_point to land on a 48 dp button.
+     */
+    const val MAX_SIDE = 1024
+    private const val JPEG_QUALITY = 60
     private const val CAPTURE_FAILED = "Couldn't capture the screen."
 
     /** [width]×[height] scaled down (never up) so the longest side is at most [maxSide]. */

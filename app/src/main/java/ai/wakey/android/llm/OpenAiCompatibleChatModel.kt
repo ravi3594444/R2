@@ -58,11 +58,11 @@ class OpenAiCompatibleChatModel internal constructor(
         val started = System.nanoTime()
         val withEffort = endpoint !in noReasoningEffort
         val body = try {
-            post(url, key, encode(request, modelId, REASONING_EFFORT.takeIf { withEffort }))
+            post(url, key, request.sessionId, encode(request, modelId, REASONING_EFFORT.takeIf { withEffort }))
         } catch (e: LlmException) {
             if (!withEffort || e.kind != LlmException.Kind.BadRequest) throw e
             // Not every model accepts reasoning_effort: retry once without it and remember the answer.
-            post(url, key, encode(request, modelId, null)).also { noReasoningEffort += endpoint }
+            post(url, key, request.sessionId, encode(request, modelId, null)).also { noReasoningEffort += endpoint }
         }
         val latencyMs = (System.nanoTime() - started) / 1_000_000
         return withContext(Dispatchers.Default) { ChatJson.parseResponse(body, latencyMs) }
@@ -84,11 +84,13 @@ class OpenAiCompatibleChatModel internal constructor(
         withContext(Dispatchers.Default) { ChatJson.requestBody(request, modelId, reasoningEffort).toString() }
 
     /** POSTs [json] and returns the body of a 2xx response, retrying once on 429/5xx. */
-    private suspend fun post(url: HttpUrl, key: String, json: String): String {
+    private suspend fun post(url: HttpUrl, key: String, sessionId: String?, json: String): String {
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $key")
             .header("Accept", "application/json")
+            // Fireworks caches prompt prefixes per replica; this keeps an agent's calls on one replica.
+            .apply { sessionId?.let { header("x-session-affinity", it) } }
             .post(json.toRequestBody(JSON))
             .build()
         var retried = false

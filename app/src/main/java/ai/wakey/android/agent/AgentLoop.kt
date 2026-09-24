@@ -1,24 +1,32 @@
 package ai.wakey.android.agent
 
+import ai.wakey.android.BuildConfig
 import ai.wakey.android.WakeyApp
 import ai.wakey.android.accessibility.ScreenController
 import ai.wakey.android.accessibility.ScreenObservation
+import ai.wakey.android.accessibility.ScreenshotResult
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AgentActionInfo
 import ai.wakey.android.llm.ChatMessage
 import ai.wakey.android.llm.ChatModel
 import ai.wakey.android.llm.ChatRequest
+import ai.wakey.android.llm.ChatResponse
+import ai.wakey.android.llm.DecisionModel
 import ai.wakey.android.llm.LlmException
 import ai.wakey.android.llm.ToolCall
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.util.UUID
 
 /** What the agent needs from [DeviceActions], as an interface so the loop can be tested off-device. */
 internal interface AppLauncher {
@@ -43,12 +51,14 @@ class AgentLoop internal constructor(
     private val clock: () -> Long,
     private val timeoutMs: Long,
     private val onStopRequested: () -> Unit,
+    private val decisions: () -> DecisionModel? = { null },
 ) {
     constructor(
         model: ChatModel,
         device: DeviceActions,
         screen: () -> ScreenController?,
         settings: () -> WakeySettings,
+        decisions: () -> DecisionModel? = { null },
     ) : this(
         model = model,
         apps = object : AppLauncher {
@@ -60,7 +70,11 @@ class AgentLoop internal constructor(
         clock = SystemClock::elapsedRealtime,
         timeoutMs = TIMEOUT_MS,
         onStopRequested = { WakeyApp.graph.controller.stop() },
+        decisions = decisions,
     )
+
+    /** One id per app process, so every agent call can hit the provider's cached prompt prefix. */
+    private val affinityId = "wakey-" + UUID.randomUUID()
 
     /** Works towards [goal] until the model finishes or asks, or a step, time or safety limit stops it. */
     suspend fun run(goal: String, listener: AgentListener): AgentResult {
@@ -91,13 +105,26 @@ class AgentLoop internal constructor(
         private var fullScreenAt = -1
         private var fullScreenShort: ChatMessage? = null
         private var screenshotAt = -1
+        /** Size of the screenshot currently in the conversation; tap_point coordinates refer to it. */
+        private var shotSize: Pair<Int, Int>? = null
+        /** A screenshot to attach once every tool result of the current turn has been added. */
+        private var pendingShot: ScreenshotResult? = null
+        private var autoShotSignature: String? = null
+        private var lastOutcome: ActionOutcome? = null
+        private var decisionCalls = 0
+        /** Model turns to leave to the LLM after a fast decision didn't help; the fast model is off for good on errors. */
+        private var fastCooldown = 0
+        private var fastOff = false
+        private var fastCalls = 0
+        /** Short descriptions of what has been done, given to the fast model as context. */
+        private val actionLog = mutableListOf<String>()
         private var invalidStreak = 0
         private var unchangedStreak = 0
         /** The premature-finish correction is sent at most once per run. */
         private var finishChecked = false
 
         fun result(status: AgentStatus, reply: String) =
-            AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt)
+            AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt, decisionCalls)
 
         suspend fun run(): AgentResult {
             val controller = screen()
@@ -115,13 +142,11 @@ class AgentLoop internal constructor(
                 val clipped = text.take(MAX_HISTORY_CHARS)
                 messages += if (role == "user") ChatMessage.User(clipped) else ChatMessage.Assistant(clipped)
             }
-            val request = AgentPrompt.request(goal)
+            // The request gets its own message so everything up to it stays a stable, cacheable prefix.
+            messages += ChatMessage.User(AgentPrompt.request(goal))
             observation = controller?.takeIf { access == ScreenAccess.Available }?.let { read(it) }
-            val first = observation
-            if (first != null) {
-                addFullScreen(ChatMessage.User("$request\n\nCurrent screen:\n${AgentPrompt.screen(first)}"), ChatMessage.User(request))
-            } else {
-                messages += ChatMessage.User(request)
+            observation?.let { first ->
+                addFullScreen(ChatMessage.User("Current screen:\n${AgentPrompt.screen(first)}"), ChatMessage.User(EARLIER_SCREEN))
             }
             // "Open Instagram and search cats": the first step is known, so run it without a model round trip.
             OpeningStep.appToOpen(goal)?.takeIf { access == ScreenAccess.Available }?.let { app ->
@@ -133,38 +158,219 @@ class AgentLoop internal constructor(
 
             while (steps < maxSteps) {
                 currentCoroutineContext().ensureActive()
-                steps++
-                val response = try {
-                    model.complete(ChatRequest(messages.toList(), tools, maxTokens = MAX_COMPLETION_TOKENS))
-                } catch (e: LlmException) {
-                    return result(AgentStatus.Failed, replies.llmError(e.kind))
+                attachScreenshotIfThin()
+                val request = ChatRequest(messages.toList(), tools, maxTokens = MAX_COMPLETION_TOKENS, sessionId = affinityId)
+                val response = when (val race = decideNext(request)) {
+                    is Race.Fast -> {
+                        when (val fast = runFastMove(race.move, race.screen)) {
+                            is FastResult.Finished -> return fast.result
+                            FastResult.Acted, FastResult.Declined -> continue
+                        }
+                    }
+                    is Race.Llm -> race.response.getOrElse { e ->
+                        if (e is LlmException) return result(AgentStatus.Failed, replies.llmError(e.kind)) else throw e
+                    }
                 }
+                if (fastCooldown > 0) fastCooldown--
                 llmCalls++
                 promptTokens += response.promptTokens
                 completionTokens += response.completionTokens
 
-                val call = response.toolCalls.firstOrNull()
-                if (call == null) {
+                val calls = response.toolCalls.take(MAX_CALLS_PER_TURN)
+                if (calls.isEmpty()) {
+                    steps++
                     // A plain text answer is a finish.
                     response.text?.trim()?.takeIf { it.isNotEmpty() }?.let { return result(AgentStatus.Completed, it) }
-                    messages += ChatMessage.User("Respond with exactly one tool call.")
+                    messages += ChatMessage.User("Respond with a tool call.")
                     if (++invalidStreak >= MAX_INVALID) return result(AgentStatus.Failed, replies.confused())
                     continue
                 }
-                // Only the first call runs, so only it is kept: every kept call needs a tool result.
-                messages += ChatMessage.Assistant(response.text?.takeIf { it.isNotBlank() }, listOf(call))
-                when (val validation = AgentTools.validate(call, allowed, observation)) {
-                    is ToolValidation.Invalid -> {
-                        messages += ChatMessage.Tool(call.id, call.name, "Error: ${validation.error}")
-                        if (++invalidStreak >= MAX_INVALID) return result(AgentStatus.Failed, replies.confused())
-                    }
-                    is ToolValidation.Valid -> {
-                        invalidStreak = 0
-                        perform(validation.action, call)?.let { return it }
+                // Every kept call needs a tool result, including the ones skipped below.
+                messages += ChatMessage.Assistant(response.text?.takeIf { it.isNotBlank() }, calls)
+                runTurn(calls, allowed)?.let { return it }
+                pendingShot?.let(::attachScreenshot)
+                pendingShot = null
+            }
+            return result(AgentStatus.StepLimit, replies.stepLimit(maxSteps))
+        }
+
+        /**
+         * Runs the calls of one model turn in order. Later calls were planned without seeing the screen
+         * the earlier ones produce, so they run only while everything succeeds, are re-targeted by
+         * label, and may only change the screen; the rest are answered as skipped.
+         */
+        private suspend fun runTurn(calls: List<ToolCall>, allowed: Set<String>): AgentResult? {
+            val turnStart = observation
+            var skipReason: String? = null
+            for ((index, call) in calls.withIndex()) {
+                if (skipReason == null && steps >= maxSteps) skipReason = "the step limit was reached"
+                if (skipReason != null) {
+                    messages += ChatMessage.Tool(call.id, call.name, "SKIPPED: $skipReason. Decide again from the latest screen.")
+                    continue
+                }
+                steps++
+                val later = index > 0
+                val allowedNow = if (shotSize != null && !later) allowed else allowed - AgentTools.TAP_POINT
+                val validation = AgentTools.validate(call, allowedNow, observation, idScreen = turnStart.takeIf { later })
+                if (validation is ToolValidation.Invalid) {
+                    messages += ChatMessage.Tool(call.id, call.name, "Error: ${validation.error}")
+                    if (!later && ++invalidStreak >= MAX_INVALID) return result(AgentStatus.Failed, replies.confused())
+                    skipReason = "an earlier call in this turn was rejected"
+                    continue
+                }
+                validation as ToolValidation.Valid
+                if (!later) invalidStreak = 0
+                val action = validation.action
+                if (later && action !is AgentAction.ScreenChanging) {
+                    messages += ChatMessage.Tool(
+                        call.id, call.name,
+                        "SKIPPED: ${call.name} must wait for the new screen. To end with an action, give it done_reply and done_if_visible.",
+                    )
+                    skipReason = "an earlier call in this turn had to wait for the new screen"
+                    continue
+                }
+                perform(action, call)?.let { return it }
+                if (action !is AgentAction.ScreenChanging) {
+                    skipReason = "${call.name} came first; its result is needed before acting"
+                    continue
+                }
+                if (lastOutcome?.success != true) {
+                    skipReason = "the previous action failed"
+                    continue
+                }
+                validation.done?.let { claim ->
+                    if (confirmsDone(claim)) return result(AgentStatus.Completed, claim.reply)
+                    noteUnconfirmed(claim)
+                    skipReason = "the task isn't confirmed done yet"
+                }
+            }
+            return null
+        }
+
+        /**
+         * Picks the next step. The LLM request always starts; when the element list alone can decide
+         * the step, the fast decision model (Jev, ~0.4 s) races it. A confident Jev answer that arrives
+         * first cancels the LLM call; otherwise the LLM's answer is used, so the hybrid is never slower
+         * than the LLM alone.
+         */
+        private suspend fun decideNext(request: ChatRequest): Race = coroutineScope {
+            val llmCall = async { attempt { model.complete(request) } }
+            val fast = fastCandidate() ?: return@coroutineScope Race.Llm(llmCall.await())
+            val (plan, decider, screen) = fast
+            val fastCall = async { attempt { decider.choose(plan.state, FastDecision.INSTRUCTIONS, plan.options) } }
+            select<Race> {
+                llmCall.onAwait { answer ->
+                    fastCall.cancel()
+                    Race.Llm(answer)
+                }
+                fastCall.onAwait { decision ->
+                    // Unreachable, rejected key, bad reply: the LLM handles the rest of this run.
+                    if (decision.isFailure) fastOff = true
+                    val move = decision.getOrNull()?.let { FastDecision.interpret(plan, it) }
+                    if (move != null) {
+                        llmCall.cancel()
+                        Race.Fast(move, screen)
+                    } else {
+                        fastCooldown = 1
+                        Race.Llm(llmCall.await())
                     }
                 }
             }
-            return result(AgentStatus.StepLimit, replies.stepLimit(maxSteps))
+        }
+
+        /** A decision request for the current screen, when the fast model may decide this step. */
+        private fun fastCandidate(): Triple<FastDecision.Plan, DecisionModel, ScreenObservation>? {
+            if (fastOff || fastCooldown > 0 || access != ScreenAccess.Available || shotSize != null) return null
+            if (fastCalls >= MAX_FAST_CALLS || !FastDecision.suitsGoal(goal)) return null
+            val screen = observation?.takeIf { !looksThin(it) && it.packageName != BuildConfig.APPLICATION_ID } ?: return null
+            val decider = decisions() ?: return null
+            fastCalls++
+            return Triple(FastDecision.plan(goal, screen, actionLog, "fast_$fastCalls"), decider, screen)
+        }
+
+        /**
+         * Runs a confident fast decision through the same safety check and verification as LLM
+         * actions. "Done" needs the screen to show the goal, never just a tap.
+         */
+        private suspend fun runFastMove(move: FastDecision.Move, screen: ScreenObservation): FastResult {
+            decisionCalls++
+            return when (move) {
+                FastDecision.Move.Done -> {
+                    if (FinishCheck.unopenedTarget(goal, screen) != null) {
+                        fastCooldown = 1
+                        FastResult.Declined
+                    } else {
+                        FastResult.Finished(result(AgentStatus.Completed, replies.done(FastDecision.searchQuery(goal), heading(screen))))
+                    }
+                }
+                is FastDecision.Move.Act -> {
+                    steps++
+                    messages += ChatMessage.Assistant(null, listOf(move.call))
+                    act(move.action, move.call)?.let { return FastResult.Finished(it) }
+                    // Same evidence rule as an LLM done claim: e.g. the search words showing in results.
+                    move.confirmText?.let { text ->
+                        val claim = DoneClaim(replies.done(FastDecision.searchQuery(goal), null), text)
+                        if (lastOutcome?.success == true && confirmsDone(claim)) {
+                            return FastResult.Finished(result(AgentStatus.Completed, claim.reply))
+                        }
+                    }
+                    // A failed or no-op step: let the LLM look at it before trusting the fast model again.
+                    if (lastOutcome?.success != true || unchangedStreak > 0) fastCooldown = 1
+                    FastResult.Acted
+                }
+            }
+        }
+
+        /** The screen's title: its first plain-text element, else the app name. */
+        private fun heading(screen: ScreenObservation): String? =
+            screen.elements.firstOrNull { !it.clickable && !it.editable && it.label() != null }?.label()?.substringBefore(" – ")
+                ?: screen.appLabel
+
+        /**
+         * An action's done claim holds when the screen changed, the promised text is visible outside
+         * input fields, and nothing requested is merely listed. Never on the tap alone.
+         */
+        private fun confirmsDone(claim: DoneClaim): Boolean {
+            val screen = observation ?: return false
+            val wanted = claim.visibleText.trim().takeIf { it.length >= MIN_DONE_TEXT } ?: return false
+            if (unchangedStreak > 0) return false
+            val visible = screen.elements.any { element ->
+                !element.editable && element.labels().any { it.contains(wanted, ignoreCase = true) }
+            }
+            return visible && FinishCheck.unopenedTarget(goal, screen) == null
+        }
+
+        private fun noteUnconfirmed(claim: DoneClaim) {
+            val last = messages.lastOrNull() as? ChatMessage.Tool ?: return
+            messages[messages.lastIndex] = last.copy(
+                content = last.content + "\n(Not finished yet: “${claim.visibleText}” isn't visible on this screen.)",
+            )
+        }
+
+        /**
+         * Some apps (games, canvases, custom views) expose almost nothing to accessibility. Attaching a
+         * screenshot up front saves the model a take_screenshot round trip. Once per distinct screen.
+         */
+        private suspend fun attachScreenshotIfThin() {
+            val screen = observation ?: return
+            if (access != ScreenAccess.Available || shotSize != null || screen.signature == autoShotSignature) return
+            if (screen.packageName == BuildConfig.APPLICATION_ID || !looksThin(screen)) return
+            autoShotSignature = screen.signature
+            val shot = screen()?.screenshot() ?: return
+            if (shot.jpegBase64 != null) attachScreenshot(shot, automatic = true)
+        }
+
+        private fun attachScreenshot(shot: ScreenshotResult, automatic: Boolean = false) {
+            val image = shot.jpegBase64 ?: return
+            dropScreenshot()
+            val why = if (automatic) "The element list looks incomplete, so a screenshot" else "Screenshot"
+            messages += ChatMessage.User(
+                "$why of the current screen (${shot.width}×${shot.height} px) is attached. " +
+                    "For a control that is only visible here, use tap_point with pixel coordinates in this image.",
+                image,
+            )
+            screenshotAt = messages.lastIndex
+            shotSize = shot.width to shot.height
         }
 
         /** Runs one validated action; returns the final result if it ends the run. */
@@ -204,15 +410,12 @@ class AgentLoop internal constructor(
             }
             listener.onAction(info.copy(result = outcome.message, success = outcome.success))
             messages += ChatMessage.Tool(call.id, call.name, outcomeLine(outcome))
-            if (image != null) {
-                // Tool messages can't carry images, so the screenshot follows as a user message.
-                dropScreenshot()
-                messages += ChatMessage.User("Screenshot of the current screen (${shot.width}×${shot.height}).", image)
-                screenshotAt = messages.lastIndex
-            }
+            // Tool messages can't carry images, so the screenshot follows as a user message after the turn.
+            if (image != null) pendingShot = shot
         }
 
         private suspend fun act(action: AgentAction.ScreenChanging, call: ToolCall): AgentResult? {
+            lastOutcome = null
             SafetyPolicy.review(action, observation?.appLabel)?.let { request ->
                 val approved = listener.confirm(request)
                 currentCoroutineContext().ensureActive()
@@ -240,12 +443,16 @@ class AgentLoop internal constructor(
                 settledRead(it)
             }
             observation = after
+            lastOutcome = launch.outcome
+            actionLog += (if (launch.outcome.success) "" else "FAILED: ") + describe(action)
             dropScreenshot()
             listener.onAction(info.copy(result = launch.outcome.message, success = launch.outcome.success))
             addToolResult(call, launch.outcome, after, "New screen")
 
             if (after != null) {
-                unchangedStreak = if (after.signature == before) unchangedStreak + 1 else 0
+                // scroll_to may find its target without moving, which is progress, not a stuck screen.
+                val moved = after.signature != before || (action is AgentAction.ScrollTo && launch.outcome.success)
+                unchangedStreak = if (moved) 0 else unchangedStreak + 1
                 if (unchangedStreak >= MAX_UNCHANGED) return result(AgentStatus.Failed, replies.stuck())
             }
             return null
@@ -257,6 +464,15 @@ class AgentLoop internal constructor(
                 is AgentAction.Tap -> onScreen(controller) { tap(action.target) }
                 is AgentAction.EnterText -> onScreen(controller) { enterText(action.target, action.text, action.submit) }
                 is AgentAction.Scroll -> onScreen(controller) { scroll(action.direction, action.target) }
+                is AgentAction.ScrollTo -> onScreen(controller) { scrollTo(this, action) }
+                is AgentAction.TapPoint -> {
+                    val size = shotSize
+                    if (size == null) {
+                        AppLaunch(ActionOutcome(false, "No screenshot to tap on; call take_screenshot first."))
+                    } else {
+                        onScreen(controller) { tapPoint(action.x, action.y, size.first, size.second) }
+                    }
+                }
                 is AgentAction.GoBack -> onScreen(controller) { back() }
                 is AgentAction.GoHome -> onScreen(controller) { home() }
             }
@@ -269,6 +485,23 @@ class AgentLoop internal constructor(
             listener.onAction(info)
             screen()?.showStatus(description, onStopRequested)
             return info
+        }
+
+        /** Scrolls until an element labelled like [ScrollTo.text] is visible, without a model call per scroll. */
+        private suspend fun scrollTo(controller: ScreenController, action: AgentAction.ScrollTo): ActionOutcome {
+            var current = observation ?: read(controller) ?: return ActionOutcome(false, "The screen can't be read.")
+            for (attempt in 0..MAX_SCROLL_TO) {
+                current.elements.firstOrNull { element -> element.labels().any { it.contains(action.text, ignoreCase = true) } }
+                    ?.let { return ActionOutcome(true, "Found “${it.label()}”") }
+                if (attempt == MAX_SCROLL_TO) break
+                val scrolled = controller.scroll(action.direction, null)
+                if (!scrolled.success) return ActionOutcome(false, "Couldn't scroll further to look for “${action.text}”.")
+                val next = settledRead(controller) ?: return ActionOutcome(false, "The screen can't be read.")
+                if (next.signature == current.signature) return ActionOutcome(false, "Reached the end without finding “${action.text}”.")
+                current = next
+                observation = next
+            }
+            return ActionOutcome(false, "“${action.text}” wasn't found after $MAX_SCROLL_TO scrolls.")
         }
 
         /**
@@ -333,6 +566,7 @@ class AgentLoop internal constructor(
         private fun dropScreenshot() {
             if (screenshotAt >= 0) messages[screenshotAt] = ChatMessage.User("(An earlier screenshot was removed; the screen has changed.)")
             screenshotAt = -1
+            shotSize = null
         }
     }
 
@@ -341,8 +575,30 @@ class AgentLoop internal constructor(
         is AgentAction.Tap -> "Tapping “${action.element?.label() ?: action.target.label ?: "item ${action.target.id}"}”"
         is AgentAction.EnterText -> "Typing “${action.text.take(40)}${if (action.text.length > 40) "…" else ""}”"
         is AgentAction.Scroll -> "Scrolling ${action.direction.name.lowercase()}"
+        is AgentAction.ScrollTo -> "Scrolling to find “${action.text.take(40)}”"
+        is AgentAction.TapPoint -> "Tapping the screen at (${action.x}, ${action.y})"
         is AgentAction.GoBack -> "Going back"
         is AgentAction.GoHome -> "Going to the home screen"
+    }
+
+    private sealed interface Race {
+        data class Llm(val response: Result<ChatResponse>) : Race
+        data class Fast(val move: FastDecision.Move, val screen: ScreenObservation) : Race
+    }
+
+    /** Like runCatching, but cancellation still propagates. */
+    private suspend fun <T> attempt(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    private sealed interface FastResult {
+        data object Declined : FastResult
+        data object Acted : FastResult
+        data class Finished(val result: AgentResult) : FastResult
     }
 
     private fun outcomeLine(outcome: ActionOutcome) = (if (outcome.success) "OK: " else "FAILED: ") + outcome.message
@@ -361,5 +617,20 @@ class AgentLoop internal constructor(
         const val SETTLE_SLACK_MS = 50L
         const val STABLE_POLL_MS = 200L
         const val MAX_STABLE_CHECKS = 4
+        /** Batched calls per model turn; enough for "open search, type, submit". */
+        const val MAX_CALLS_PER_TURN = 3
+        /** Fast decisions per run; beyond this a task isn't routine and the LLM steers. */
+        const val MAX_FAST_CALLS = 10
+        const val MAX_SCROLL_TO = 8
+        const val MIN_DONE_TEXT = 2
+        const val EARLIER_SCREEN = "(The screen at the start; it has changed since.)"
+        const val THIN_MIN_CONTROLS = 2
+        const val THIN_MIN_LABELS = 3
+
+        /** Few labelled or tappable elements: the tree probably can't identify the next control. */
+        fun looksThin(screen: ScreenObservation): Boolean =
+            screen.warning != null ||
+                screen.elements.count { it.clickable || it.editable } < THIN_MIN_CONTROLS ||
+                screen.elements.count { it.label() != null } < THIN_MIN_LABELS
     }
 }

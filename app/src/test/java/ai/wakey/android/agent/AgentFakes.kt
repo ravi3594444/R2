@@ -55,6 +55,8 @@ internal class FakeScreen(var ui: FakeUi) : ScreenController {
     /** Screen reached by tapping an element with this label, from any screen. */
     val transitions = mutableMapOf<String, FakeUi>()
     var onScroll: (ScrollDirection) -> Unit = {}
+    /** Screen reached by any tap_point. */
+    var pointTransition: FakeUi? = null
     var onText: (String) -> Unit = {}
     var lastStop: (() -> Unit)? = null
     private var latest: ScreenObservation = ui.observation()
@@ -81,6 +83,12 @@ internal class FakeScreen(var ui: FakeUi) : ScreenController {
         log += "scroll ${direction.name.lowercase()}"
         onScroll(direction)
         return ActionOutcome(true, "Scrolled.")
+    }
+
+    override suspend fun tapPoint(x: Int, y: Int, imageWidth: Int, imageHeight: Int): ActionOutcome {
+        log += "tap point $x,$y of ${imageWidth}x$imageHeight"
+        pointTransition?.let { ui = it }
+        return ActionOutcome(true, "Tapped the screenshot at ($x, $y)")
     }
 
     override fun back(): ActionOutcome = ActionOutcome(true, "Went back.").also { log += "back" }
