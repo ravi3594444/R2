@@ -10,13 +10,23 @@ data class EncodedKeyword(
     val phrase: String,
     /** e.g. ["▁HE", "Y", "▁WA", "KE", "Y"]. */
     val tokens: List<String>,
+    /**
+     * Tokens of other ways the phrase is commonly said or heard (see [PronunciationVariants]), e.g.
+     * ["▁HE", "Y", "▁WA", "K", "Y"] for "HEY WAKY". Spotted in the same stream and reported as [phrase].
+     */
+    val variants: List<List<String>> = emptyList(),
 ) {
-    /** Keyword tag reported back by sherpa-onnx on detection. */
+    /** Keyword tag reported back by sherpa-onnx on detection, for [tokens] and every variant. */
     val tag: String get() = phrase.replace(' ', '_')
 
-    /** One sherpa-onnx keywords line: `▁HE Y ▁WA KE Y :boost #threshold @HEY_WAKEY`. */
-    fun toSherpaLine(boostScore: Float, threshold: Float): String =
-        tokens.joinToString(" ") + " :%.2f #%.2f @%s".format(java.util.Locale.US, boostScore, threshold, tag)
+    /**
+     * The keywords of one sherpa-onnx stream: a `tokens :boost #threshold @TAG` line for [tokens] and
+     * each variant, joined by '/', e.g. `▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY/▁HE Y ▁WA K Y :1.50 ...`.
+     */
+    fun toSherpaKeywords(boostScore: Float, threshold: Float): String {
+        val scoring = " :%.2f #%.2f @%s".format(Locale.US, boostScore, threshold, tag)
+        return (listOf(tokens) + variants).joinToString("/") { it.joinToString(" ") + scoring }
+    }
 }
 
 class KeywordEncodingException(message: String) : IllegalArgumentException(message)
@@ -27,7 +37,8 @@ class KeywordEncodingException(message: String) : IllegalArgumentException(messa
  *
  * The tokens are exactly what Python `sentencepiece` produces for `encode(phrase.upper())`
  * (checked against 48 reference phrases in the unit tests). Phrases the detector cannot spot
- * reliably are rejected with a message that can be shown as-is in Settings.
+ * reliably are rejected with a message that can be shown as-is in Settings. Each phrase also gets
+ * the tokens of its [PronunciationVariants], which the detector spots under the same tag.
  *
  * @param bpeModel the model's `bpe.model` (a SentencePiece unigram model).
  * @param validTokens the symbols in the model's `tokens.txt`.
@@ -50,8 +61,7 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         words.firstOrNull { word -> word.none { it.isAsciiLetter() } }?.let { fail("“$it” is not a word.") }
 
         val upper = words.map { it.uppercase(Locale.ROOT) }
-        val text = (if (model.addDummyPrefix) WORD_START else "") + upper.joinToString(WORD_START)
-        val tokens = model.segment(text) ?: fail("“$display” can't be spelled with the wake-word model's vocabulary.")
+        val tokens = segment(upper) ?: fail("“$display” can't be spelled with the wake-word model's vocabulary.")
         tokens.firstOrNull { it !in validTokens }?.let {
             fail("“$display” can't be spelled with the wake-word model's vocabulary (missing “$it”).")
         }
@@ -59,8 +69,15 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         if (display.count { it.isAsciiLetter() } < MIN_LETTERS || tokens.size < MIN_TOKENS) {
             fail("“$display” is too short to detect reliably. Use a longer phrase, like “Hey Wakey”.")
         }
-        return EncodedKeyword(upper.joinToString(" "), tokens)
+        val variants = PronunciationVariants.of(upper)
+            .mapNotNull { variant -> segment(variant)?.takeIf { pieces -> pieces.all { it in validTokens } } }
+            .filter { it != tokens }
+            .distinct()
+        return EncodedKeyword(upper.joinToString(" "), tokens, variants)
     }
+
+    private fun segment(words: List<String>): List<String>? =
+        model.segment((if (model.addDummyPrefix) WORD_START else "") + words.joinToString(WORD_START))
 
     companion object {
         const val ASSET_DIR = "kws"
