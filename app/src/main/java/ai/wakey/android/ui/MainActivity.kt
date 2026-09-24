@@ -87,7 +87,7 @@ private fun WakeyRoot(controller: AssistantController, listenRequests: StateFlow
     val listenRequest by listenRequests.collectAsStateWithLifecycle()
     val context = LocalContext.current
     // The floating button talks through the voice service, which only a visible app may start.
-    LifecycleResumeEffect(settings.floatingButton, settings.onboardingDone, setup.status.microphone) {
+    LifecycleResumeEffect(settings.floatingButton, settings.onboardingDone, setup.status.microphone, setup.status.screenControl) {
         if (settings.onboardingDone && setup.status.microphone) controller.resumeFloatingButton(context)
         onPauseOrDispose {}
     }

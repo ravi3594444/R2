@@ -15,16 +15,16 @@ import java.util.concurrent.Executors
 class FileTaskStore(private val file: File) : TaskStore {
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "wakey-tasks") }
 
-    override fun load(): List<WakeyTask> = try {
-        if (file.isFile) TaskJson.decode(file.readText()) else emptyList()
+    override fun load(): StoredTasks = try {
+        if (file.isFile) TaskJson.decode(file.readText()) else StoredTasks()
     } catch (e: IOException) {
         Log.w(TAG, "Could not read saved tasks", e)
-        emptyList()
+        StoredTasks()
     }
 
-    override fun save(tasks: List<WakeyTask>) {
-        val json = TaskJson.encode(tasks)
+    override fun save(tasks: List<WakeyTask>, nextId: Long) {
         writer.execute {
+            val json = TaskJson.encode(tasks, nextId)
             val partial = File(file.path + ".tmp")
             try {
                 partial.writeText(json)
@@ -44,7 +44,7 @@ class FileTaskStore(private val file: File) : TaskStore {
 internal object TaskJson {
     private const val VERSION = 1
 
-    fun encode(tasks: List<WakeyTask>): String {
+    fun encode(tasks: List<WakeyTask>, nextId: Long): String {
         val items = JSONArray()
         for (task in tasks) {
             items.put(
@@ -61,16 +61,17 @@ internal object TaskJson {
                     .put("deferred", task.deferred),
             )
         }
-        return JSONObject().put("version", VERSION).put("tasks", items).toString()
+        return JSONObject().put("version", VERSION).put("nextId", nextId).put("tasks", items).toString()
     }
 
-    fun decode(json: String): List<WakeyTask> {
-        val items = try {
-            JSONObject(json).optJSONArray("tasks") ?: return emptyList()
+    fun decode(json: String): StoredTasks {
+        val root = try {
+            JSONObject(json)
         } catch (e: JSONException) {
-            return emptyList()
+            return StoredTasks()
         }
-        return (0 until items.length()).mapNotNull { index ->
+        val items = root.optJSONArray("tasks") ?: return StoredTasks(nextId = root.optLong("nextId", 1))
+        val tasks = (0 until items.length()).mapNotNull { index ->
             val item = items.optJSONObject(index) ?: return@mapNotNull null
             val kind = TaskKind.entries.firstOrNull { it.name == item.optString("kind") } ?: return@mapNotNull null
             val status = TaskStatus.entries.firstOrNull { it.name == item.optString("status") } ?: return@mapNotNull null
@@ -88,6 +89,7 @@ internal object TaskJson {
                 deferred = item.optBoolean("deferred"),
             )
         }
+        return StoredTasks(tasks, root.optLong("nextId", 1))
     }
 
     private fun JSONObject.optLongOrNull(key: String): Long? = if (has(key) && !isNull(key)) optLong(key) else null

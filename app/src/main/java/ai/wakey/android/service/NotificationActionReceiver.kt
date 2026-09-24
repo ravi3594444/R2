@@ -31,6 +31,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     ACTION_TASK_RUN_NOW -> graph.controller.runTaskNow(id)
                     ACTION_TASK_SNOOZE -> graph.controller.snoozeTask(id)
                     ACTION_TASK_CANCEL -> graph.controller.cancelTask(id)
+                    ACTION_TASK_DISMISS -> graph.controller.dismissTask(id)
                 }
             }
         }

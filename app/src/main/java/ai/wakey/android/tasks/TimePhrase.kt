@@ -53,7 +53,12 @@ internal data class TimeSpec(
             }
             else -> listOf(today, today.plusDays(1))
         }
-        val candidates = dates.flatMap { date -> times.map { ZonedDateTime.of(date, it, now.zone) } }
+        // "Tomorrow night at 1" is 1 AM the day after tomorrow; "tonight at 12" said after midnight is this night.
+        val nightRollover = period == DayPeriod.Night && (dayOffset != null || weekday != null) &&
+            !(dayOffset == 0 && now.hour < NIGHT_ENDS_HOUR) && times.all { it.hour < NIGHT_ENDS_HOUR }
+        val candidates = dates.flatMap { date ->
+            times.map { ZonedDateTime.of(if (nightRollover) date.plusDays(1) else date, it, now.zone) }
+        }
         candidates.filter { it.isAfter(now) }.minOrNull()?.let { return it }
         // "Today at 9" said at 10, or "tonight at 12" (which is past midnight): the next day at that time.
         return if (dayOffset != null) candidates.minOrNull()?.plusDays(1)?.takeIf { it.isAfter(now) } else null
@@ -107,6 +112,11 @@ internal data class TimeSpec(
             DayPeriod.Evening -> LocalTime.of(18, 0)
             DayPeriod.Night -> LocalTime.of(20, 0)
         }
+    }
+
+    private companion object {
+        /** Hours before this on a "night" belong to the night that began the evening before. */
+        const val NIGHT_ENDS_HOUR = 6
     }
 
     private fun DayPeriod.hour24(h: Int): Int = when (this) {
@@ -242,8 +252,9 @@ internal object TimePhrase {
         private fun clock(w: List<String>, i: Int): Int? {
             if (hour != null) return null
             var j = i
+            // Not "by", "till" or "until": those end something ("keep the torch on until 10"), they don't start it.
             when (w[j]) {
-                "at", "@", "around", "about", "by", "till", "until" -> { anchored = true; j++ }
+                "at", "@", "around", "about" -> { anchored = true; j++ }
                 "for" -> { anchored = true; viaFor = true; j++ }
             }
             val word = w.getOrNull(j) ?: return null

@@ -4,12 +4,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** What a [TaskStore] keeps: the tasks, and the next id to hand out, since ids must never be reused. */
+data class StoredTasks(val tasks: List<WakeyTask> = emptyList(), val nextId: Long = 1)
+
 /** Keeps tasks across process restarts. */
 interface TaskStore {
-    fun load(): List<WakeyTask>
+    fun load(): StoredTasks
 
-    /** Replaces everything stored with [tasks]; may write in the background. */
-    fun save(tasks: List<WakeyTask>)
+    /** Replaces everything stored; may write in the background. */
+    fun save(tasks: List<WakeyTask>, nextId: Long)
 }
 
 /** Wakes Wakey at a wall-clock time. There is one wake-up at a time: the harness always asks for the next. */
@@ -35,7 +38,14 @@ class TaskHarness(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val tasks = mutableListOf<WakeyTask>()
+
+    /**
+     * Never reused, even after tasks are cleared and Wakey restarts: notification buttons refer to
+     * tasks by id, and an old "Run now" must not start a newer task.
+     */
     private var nextId = 1L
+    private var batchDepth = 0
+    private var dirty = false
 
     private val _board = MutableStateFlow(TaskBoard())
     val board: StateFlow<TaskBoard> = _board.asStateFlow()
@@ -47,8 +57,9 @@ class TaskHarness(
      */
     fun load() {
         val now = clock()
+        val stored = store.load()
         tasks.clear()
-        for (task in store.load()) {
+        for (task in stored.tasks) {
             tasks += when (task.status) {
                 TaskStatus.Running -> task.copy(status = TaskStatus.Failed, finishedAtMs = now, result = INTERRUPTED)
                 TaskStatus.Queued ->
@@ -57,8 +68,19 @@ class TaskHarness(
                 else -> task
             }
         }
-        nextId = (tasks.maxOfOrNull { it.id } ?: 0L) + 1
+        nextId = maxOf(stored.nextId, (tasks.maxOfOrNull { it.id } ?: 0L) + 1)
         publish()
+    }
+
+    /** Runs [block], publishing (and persisting) once at the end however many changes it makes. */
+    fun <T> batch(block: () -> T): T {
+        batchDepth++
+        try {
+            return block()
+        } finally {
+            batchDepth--
+            if (batchDepth == 0 && dirty) publish()
+        }
     }
 
     fun find(id: Long): WakeyTask? = tasks.firstOrNull { it.id == id }
@@ -112,13 +134,14 @@ class TaskHarness(
     }
 
     /** The phone was unlocked: waiting tasks join the queue, oldest first. */
-    fun releaseWaiting(): List<WakeyTask> =
+    fun releaseWaiting(): List<WakeyTask> = batch {
         tasks.filter { it.status == TaskStatus.WaitingForUnlock }.sortedBy { it.dueAtMs }.mapNotNull { queue(it.id) }
+    }
 
     /** Tasks that waited too long for an unlock become [TaskStatus.Missed]; returns them. */
-    fun expireWaiting(): List<WakeyTask> {
+    fun expireWaiting(): List<WakeyTask> = batch {
         val now = clock()
-        return tasks.filter { it.status == TaskStatus.WaitingForUnlock && (it.dueAtMs ?: now) + WAIT_FOR_UNLOCK_MS <= now }
+        tasks.filter { it.status == TaskStatus.WaitingForUnlock && (it.dueAtMs ?: now) + WAIT_FOR_UNLOCK_MS <= now }
             .mapNotNull { finish(it.id, TaskStatus.Missed, MISSED_LOCKED) }
     }
 
@@ -134,8 +157,9 @@ class TaskHarness(
     fun cancel(id: Long): WakeyTask? = finish(id, TaskStatus.Cancelled, null)
 
     /** Cancels everything queued to run after the current task (Stop). */
-    fun clearQueue(): List<WakeyTask> =
+    fun clearQueue(): List<WakeyTask> = batch {
         tasks.filter { it.status == TaskStatus.Queued }.mapNotNull { cancel(it.id) }
+    }
 
     /**
      * Cancels scheduled and waiting tasks: all of them ([all]) or the soonest, only of [kind] when
@@ -148,14 +172,16 @@ class TaskHarness(
             .filter { kind == null || it.kind == kind }
             .filter { needle == null || it.text.lowercase().contains(needle) }
             .sortedBy { it.dueAtMs }
-        return (if (all) matching else matching.take(1)).mapNotNull { cancel(it.id) }
+        return batch { (if (all) matching else matching.take(1)).mapNotNull { cancel(it.id) } }
     }
 
     /** Schedules a copy of [id] [delayMs] from now (Snooze); a waiting or scheduled original is closed. */
     fun snooze(id: Long, delayMs: Long): WakeyTask? {
         val original = find(id) ?: return null
-        if (!original.status.finished) finish(id, TaskStatus.Done, SNOOZED)
-        return schedule(original.text, original.kind, clock() + delayMs)
+        return batch {
+            if (!original.status.finished) finish(id, TaskStatus.Done, SNOOZED)
+            schedule(original.text, original.kind, clock() + delayMs)
+        }
     }
 
     /** Forgets finished tasks. */
@@ -189,6 +215,11 @@ class TaskHarness(
     }
 
     private fun publish() {
+        if (batchDepth > 0) {
+            dirty = true
+            return
+        }
+        dirty = false
         val finished = tasks.filter { it.status.finished }.sortedByDescending { it.finishedAtMs ?: it.createdAtMs }
         if (finished.size > RECENT_LIMIT) {
             val dropped = finished.drop(RECENT_LIMIT).mapTo(HashSet()) { it.id }
@@ -208,7 +239,7 @@ class TaskHarness(
         val nextExpiry = waiting.mapNotNull { it.dueAtMs }.minOrNull()?.plus(WAIT_FOR_UNLOCK_MS)
         val wakeAt = listOfNotNull(nextDue?.dueAtMs, nextExpiry).minOrNull()
         wakeups.wakeAt(wakeAt, ringing = nextDue?.kind == TaskKind.Alarm && nextDue.dueAtMs == wakeAt)
-        store.save(tasks.toList())
+        store.save(tasks.toList(), nextId)
     }
 
     companion object {

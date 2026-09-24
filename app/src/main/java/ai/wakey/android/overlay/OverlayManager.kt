@@ -16,6 +16,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowInsets
@@ -76,6 +77,12 @@ internal class OverlayManager(private val context: Context) {
 
     private val locked = MutableStateFlow(keyguard?.isKeyguardLocked == true)
     private val panelOpen = MutableStateFlow(false)
+
+    /** When a touch outside the panel closed it; a touch on the button closes it this way too. */
+    private var panelClosedAt = 0L
+
+    /** The current touch on the button began with the panel open, so it only closes the panel. */
+    private var touchStartedWithPanel = false
     private val refresh = MutableStateFlow(0)
     private var expiry: Job? = null
     private var hiders = 0
@@ -113,7 +120,12 @@ internal class OverlayManager(private val context: Context) {
     private val panel = OverlayWindow(
         context, windowManager,
         OverlayWindow.params(extraFlags = WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH, title = "Wakey tasks"),
-        wrap = { OutsideTouchLayer(context) { panelOpen.value = false } },
+        wrap = {
+            OutsideTouchLayer(context) {
+                panelClosedAt = SystemClock.uptimeMillis()
+                panelOpen.value = false
+            }
+        },
     ) { WakeyTheme { PanelContent() } }
 
     private val highlight = OverlayWindow(
@@ -368,15 +380,17 @@ internal class OverlayManager(private val context: Context) {
     private inner class BubbleTouches : FloatingButtonTouchLayer.Listener {
         override fun onPressedChange(pressed: Boolean) {
             bubblePressed.value = pressed
+            // The panel sees this touch as outside and may already have closed itself.
+            if (pressed) touchStartedWithPanel = panelOpen.value || SystemClock.uptimeMillis() - panelClosedAt < SAME_TOUCH_MS
         }
 
         override fun onTap() {
             // With the panel open, a tap on the button just closes it.
-            if (panelOpen.value) panelOpen.value = false else controller.onFloatingButtonTap()
+            if (touchStartedWithPanel) panelOpen.value = false else controller.onFloatingButtonTap()
         }
 
         override fun onLongPress() {
-            panelOpen.value = !panelOpen.value
+            panelOpen.value = !touchStartedWithPanel
         }
 
         override fun onDrag(dx: Int, dy: Int) {
@@ -478,6 +492,8 @@ internal class OverlayManager(private val context: Context) {
         const val PANEL_WIDTH_DP = 340f
         const val PANEL_MAX_HEIGHT_SHARE = 0.6f
         const val HIDE_SETTLE_MS = 120L
+        /** An outside touch closing the panel this close to a touch on the button is that same touch. */
+        const val SAME_TOUCH_MS = 150L
         const val HIGHLIGHT_LINGER_MS = 150L
     }
 }

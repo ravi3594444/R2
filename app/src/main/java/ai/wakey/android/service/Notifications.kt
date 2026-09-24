@@ -388,7 +388,7 @@ class Notifications(
         /** Matches the controller's confirmation timeout, after which the request counts as denied. */
         private const val CONFIRM_TIMEOUT_MS = 60_000L
         /** An alarm nobody stops rings for this long. */
-        private const val ALARM_RING_MS = 10 * 60_000L
+        const val ALARM_RING_MS = 10 * 60_000L
         private const val MAX_DETAIL_CHARS = 1_000
 
         private const val REQUEST_OPEN_APP = 1

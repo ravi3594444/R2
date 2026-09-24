@@ -25,9 +25,10 @@ sealed interface TaskRequest {
 
     /**
      * Cancel every scheduled item ([all]) or the soonest one, limited to [kind] (null: any kind) and
-     * to items whose text contains [query], if given.
+     * to items whose text contains [query], if given. [ringingOnly] ("stop the alarm") only silences a
+     * ringing alarm; if none of Wakey's rings, it is another app's, and the request runs as usual.
      */
-    data class CancelScheduled(val kind: TaskKind?, val all: Boolean, val query: String?) : TaskRequest
+    data class CancelScheduled(val kind: TaskKind?, val all: Boolean, val query: String?, val ringingOnly: Boolean = false) : TaskRequest
 }
 
 /**
@@ -85,6 +86,7 @@ object TaskParser {
     private fun management(words: List<String>): TaskRequest? {
         val phrase = words.joinToString(" ")
         if (LIST_TASKS.any { it.matches(phrase) }) return TaskRequest.ListTasks
+        if (STOP_ALARM.matches(phrase)) return TaskRequest.CancelScheduled(TaskKind.Alarm, all = false, query = null, ringingOnly = true)
         val english = CANCEL.matchEntire(phrase)
         val match = english ?: CANCEL_HINGLISH.matchEntire(phrase) ?: return null
         val noun = match.groups["noun"]!!.value
@@ -426,6 +428,8 @@ object TaskParser {
             "(?: scheduled| upcoming| pending| queued| next)? (?<noun>tasks?|reminders?|alarms?|timers?)" +
             "(?: (?:to|for|about|called|named|that says) (?<query>.+))?",
     )
+    /** "Stop the alarm" silences a ringing alarm; "stop" alone is Stop. */
+    private val STOP_ALARM = Regex("(?:stop|silence|mute|quiet)(?: the| my| that| this)? (?:alarms?|timers?|ringing)|stop ringing")
     private val CANCEL_HINGLISH = Regex(
         "(?:(?:sab|saare|sare|sabhi|mere|meri|mera) )*(?<noun>tasks?|reminders?|alarms?|timers?) " +
             "(?:cancel|delete|clear|hatao|hata do|hata dijiye|band)(?: karo| kar do| kardo| kijiye| kar dijiye)?",

@@ -1,6 +1,7 @@
 package ai.wakey.android.core
 
 import ai.wakey.android.WakeyApp
+import ai.wakey.android.accessibility.AccessibilityStatus
 import ai.wakey.android.agent.AgentListener
 import ai.wakey.android.agent.AgentLoop
 import ai.wakey.android.agent.AgentStatus
@@ -126,6 +127,12 @@ class AssistantController(
     /** Alarm notifications that may still ring, with when they started (elapsed realtime). */
     private val ringing = mutableMapOf<Long, Long>()
 
+    /**
+     * The task whose work is on screen. A replaced task finishes cancelling after its successor has
+     * started, so its clean-up must not clear the successor's state.
+     */
+    private var activeTaskId: Long? = null
+
     init {
         scope.launch { audio.level.collect { level -> _state.update { it.copy(micLevel = level) } } }
         scope.launch {
@@ -194,7 +201,8 @@ class AssistantController(
     fun setFloatingButton(context: Context, enabled: Boolean) {
         settingsRepo.update { it.copy(floatingButton = enabled) }
         when {
-            enabled && !_state.value.wakeServiceRunning -> WakeService.start(context)
+            // The button is drawn by screen control; until that's on, [resumeFloatingButton] starts the service later.
+            enabled && !_state.value.wakeServiceRunning && AccessibilityStatus.isEnabled(context) -> WakeService.start(context)
             !enabled && !wakeWordWanted -> WakeService.stop(context)
         }
     }
@@ -204,7 +212,8 @@ class AssistantController(
      * lets a visible app restart it, so it comes back whenever Wakey opens with the button on.
      */
     fun resumeFloatingButton(context: Context) {
-        if (settingsRepo.current.floatingButton && !_state.value.wakeServiceRunning && !WakeService.isRunning) WakeService.start(context)
+        val needed = settingsRepo.current.floatingButton && AccessibilityStatus.isEnabled(context)
+        if (needed && !_state.value.wakeServiceRunning && !WakeService.isRunning) WakeService.start(context)
     }
 
     /** Called by [WakeService] once it is in the foreground. Returns false if it has nothing to do. */
@@ -521,7 +530,14 @@ class AssistantController(
                 acknowledge(TaskReplies.scheduled(request, time, text), languages, clock)
             }
             TaskRequest.ListTasks -> acknowledge(TaskReplies.list(harness.board.value, time), languages, clock)
-            is TaskRequest.CancelScheduled -> acknowledge(cancelScheduled(request, time), languages, clock)
+            is TaskRequest.CancelScheduled ->
+                if (request.ringingOnly && !isRinging()) {
+                    // Another app's alarm (e.g. the Clock app's): the agent can stop it on screen.
+                    if (busy) cancelWork()
+                    runTask(harness.start(text), languages, clock)
+                } else {
+                    acknowledge(cancelScheduled(request, time), languages, clock)
+                }
         }
     }
 
@@ -534,6 +550,7 @@ class AssistantController(
         val deferred = source == InputSource.Queued || source == InputSource.Scheduled
         val requestEntry = _state.value.entries.lastOrNull { it.speaker == Speaker.User }?.id
         val job = scope.launch {
+            activeTaskId = task.id
             var reply: String
             var isError = false
             try {
@@ -570,20 +587,20 @@ class AssistantController(
                     isError = result.status == AgentStatus.Failed || result.status == AgentStatus.Timeout
                     if (result.status == AgentStatus.Cancelled) {
                         harness.finish(task.id, TaskStatus.Cancelled, null)
-                        _state.update { it.copy(taskRunning = false) }
+                        endTask(task.id)
                         return@launch
                     }
                 }
             } catch (e: CancellationException) {
                 harness.finish(task.id, TaskStatus.Cancelled, null)
-                _state.update { it.copy(taskRunning = false) }
+                endTask(task.id)
                 throw e
             } catch (e: Exception) {
                 reply = "Something went wrong: ${e.message ?: e.javaClass.simpleName}"
                 isError = true
             }
             harness.finish(task.id, if (isError) TaskStatus.Failed else TaskStatus.Done, reply)
-            _state.update { it.copy(taskRunning = false) }
+            endTask(task.id)
             val entryId = addEntry(Speaker.Wakey, reply, isError = isError)
             // Nobody asked just now, so the reply may go unheard.
             if (source == InputSource.Scheduled && !WakeyApp.isVisible) notifications.showTaskResult(task, reply, isError)
@@ -596,6 +613,13 @@ class AssistantController(
                 runNextIfIdle()
             }
         }
+    }
+
+    /** The work of [taskId] is over (its reply may still be spoken), unless another task took over. */
+    private fun endTask(taskId: Long) {
+        if (activeTaskId != taskId) return
+        activeTaskId = null
+        _state.update { it.copy(taskRunning = false) }
     }
 
     /** Starts the next queued task once nothing is running, listening or waiting for an answer. */
@@ -638,6 +662,11 @@ class AssistantController(
 
     /** The task alarm fired, or Wakey (re)started: ring, remind, run or report whatever is due. */
     fun onTaskAlarm() {
+        harness.batch { processDueTasks() }
+        runNextIfIdle()
+    }
+
+    private fun processDueTasks() {
         harness.rearm()
         val time = now()
         val nowMs = time.toInstant().toEpochMilli()
@@ -674,7 +703,6 @@ class AssistantController(
                 else -> harness.queue(task.id)
             }
         }
-        runNextIfIdle()
     }
 
     private fun onUnlocked() {
@@ -697,12 +725,19 @@ class AssistantController(
         harness.snooze(id, SNOOZE_MS)
     }
 
+    /** "Stop" on a ringing alarm or "Done" on a reminder. */
+    fun dismissTask(id: Long) {
+        ringing.remove(id)
+        notifications.cancelTask(id)
+    }
+
     /** Cancels one task. The running one is skipped, and the queue moves on. */
     fun cancelTask(id: Long) {
         silenceAlarm(id)
         notifications.cancelTask(id)
         if (harness.board.value.running?.id == id && taskJob?.isActive == true) {
             cancelWork()
+            activeTaskId = null
             _state.update { it.copy(phase = if (session != null) AssistantPhase.Hearing else restingPhase(), currentAction = null, taskRunning = false) }
         } else {
             harness.cancel(id)
@@ -730,7 +765,7 @@ class AssistantController(
     }
 
     private fun isRinging(): Boolean {
-        val cutoff = SystemClock.elapsedRealtime() - ALARM_RING_MS
+        val cutoff = SystemClock.elapsedRealtime() - Notifications.ALARM_RING_MS
         return ringing.values.any { it > cutoff }
     }
 
@@ -882,6 +917,7 @@ class AssistantController(
         silenceAlarms()
         listenWhenReady?.cancel()
         listenWhenReady = null
+        activeTaskId = null
         _state.update {
             it.copy(
                 phase = restingPhase(), currentAction = null, liveTranscript = "", pushToTalkActive = false, taskRunning = false,
@@ -965,11 +1001,12 @@ class AssistantController(
 
     // ------------------------------------------------------------------ internals
 
-    private fun restingPhase() = if (_state.value.wakeWordEnabled) AssistantPhase.WakeListening else AssistantPhase.Idle
+    private fun restingPhase(s: AssistantUiState = _state.value) =
+        if (s.wakeWordEnabled) AssistantPhase.WakeListening else AssistantPhase.Idle
 
     /** The phase to return to after listening or speaking: the running task's, else resting. */
     private fun busyPhase(s: AssistantUiState): AssistantPhase = when {
-        !s.taskRunning -> if (s.wakeWordEnabled) AssistantPhase.WakeListening else AssistantPhase.Idle
+        !s.taskRunning -> restingPhase(s)
         s.currentAction != null -> AssistantPhase.Acting
         else -> AssistantPhase.Thinking
     }
@@ -1057,8 +1094,6 @@ class AssistantController(
         /** How long the floating button waits for the voice service before opening Wakey instead. */
         private const val VOICE_SERVICE_START_TIMEOUT_MS = 3_000L
         private const val SNOOZE_MS = 10 * 60_000L
-        /** Matches the alarm notification's timeout. */
-        private const val ALARM_RING_MS = 10 * 60_000L
         private const val MAX_ENTRIES = 200
         private const val MAX_RECENT_ACTIONS = WakeySettings.MAX_AGENT_STEPS_LIMIT
         private const val MAX_KEYTERMS = 16

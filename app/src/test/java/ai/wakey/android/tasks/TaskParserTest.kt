@@ -80,6 +80,16 @@ class TaskParserTest {
     }
 
     @Test
+    fun hoursAfterMidnightBelongToTheNightNamed() {
+        assertScheduled("remind me tonight at 12 to lock up", "lock up", TaskKind.Reminder, at(25, 0))
+        assertScheduled("remind me tomorrow night at 12 to lock up", "lock up", TaskKind.Reminder, at(26, 0))
+        assertScheduled("kal raat 1 baje yaad dilana ki dawai leni hai", "dawai leni hai", TaskKind.Reminder, at(26, 1))
+        assertScheduled("remind me on saturday night at 1 to call dad", "call dad", TaskKind.Reminder, at(27, 1))
+        // Without a day, the next such hour.
+        assertTask("raat 1 baje torch band karo", "torch band karo", at(25, 1))
+    }
+
+    @Test
     fun delays() {
         val request = parse("play despacito in 10 minutes") as TaskRequest.Scheduled
         assertEquals("play despacito", request.text)
@@ -236,6 +246,13 @@ class TaskParserTest {
         assertEquals(TaskRequest.CancelScheduled(TaskKind.Reminder, all = false, query = "drink water"), parse("cancel the reminder to drink water"))
         assertEquals(TaskRequest.CancelScheduled(TaskKind.Alarm, all = true, query = null), parse("sab alarm cancel karo"))
         assertEquals(TaskRequest.CancelScheduled(TaskKind.Reminder, all = false, query = null), parse("reminder hata do"))
-        assertNow("cancel my Uber", "cancel the order")
+        val stopRinging = TaskRequest.CancelScheduled(TaskKind.Alarm, all = false, query = null, ringingOnly = true)
+        assertEquals(stopRinging, parse("stop the alarm"))
+        assertEquals(stopRinging, parse("Hey Wakey, stop the timer"))
+        assertEquals(stopRinging, parse("stop ringing"))
+        assertNow("cancel my Uber", "cancel the order", "stop the music")
     }
+
+    @Test
+    fun endTimesAreNotStartTimes() = assertNow("keep the flashlight on until 10", "play music till 6", "finish this by 5")
 }
