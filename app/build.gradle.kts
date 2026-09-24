@@ -85,6 +85,13 @@ val secrets = Properties().apply {
 fun secret(name: String): String = (secrets.getProperty(name) ?: System.getenv(name) ?: "").trim()
 fun quoted(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
+// Optional: render the Compose UI to PNGs on the JVM with Robolectric's native graphics.
+//   ./gradlew testDebugUnitTest -Pwakey.screenshots --tests '*UiScreenshots*'
+// Images land in app/build/screenshots. -Pwakey.robolectricRepo=<maven url> picks where Robolectric
+// downloads its Android runtime. Off by default, so normal builds download nothing extra.
+val screenshots = providers.gradleProperty("wakey.screenshots").isPresent
+val robolectricRepo: String? = providers.gradleProperty("wakey.robolectricRepo").orNull
+
 android {
     namespace = "ai.wakey.android"
     compileSdk = 35
@@ -93,8 +100,8 @@ android {
         applicationId = "ai.wakey.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.2.2"
+        versionCode = 5
+        versionName = "0.2.3"
         buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(""))
         buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(""))
     }
@@ -138,7 +145,17 @@ android {
 
     kotlinOptions { jvmTarget = "17" }
 
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        if (screenshots) {
+            unitTests.isIncludeAndroidResources = true
+            unitTests.all { test ->
+                test.systemProperty("wakey.screenshotDir", layout.buildDirectory.dir("screenshots").get().asFile.path)
+                robolectricRepo?.let { test.systemProperty("robolectric.dependency.repo.url", it) }
+            }
+        }
+    }
+    if (screenshots) sourceSets["test"].java.srcDir("src/screenshotTest/java")
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -174,4 +191,5 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    if (screenshots) testImplementation("org.robolectric:robolectric:4.14.1")
 }

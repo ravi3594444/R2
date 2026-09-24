@@ -42,12 +42,19 @@ class WakeySession(context: Context) : VoiceInteractionSession(context) {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
         }
         detail = TextView(context).apply {
-            setTextColor(Color.rgb(0xC9, 0xD2, 0xFF))
+            setTextColor(Color.rgb(0xBD, 0xBD, 0xBD))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             setPadding(0, dp(6), 0, dp(10))
         }
         val stop = Button(context).apply {
             text = context.getString(R.string.assist_stop)
+            isAllCaps = false
+            setTextColor(Color.BLACK)
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(24).toFloat()
+            }
+            setPadding(dp(24), 0, dp(24), 0)
             setOnClickListener {
                 WakeyApp.graph.controller.stop()
                 hide()
@@ -57,8 +64,9 @@ class WakeySession(context: Context) : VoiceInteractionSession(context) {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(18), dp(20), dp(14))
             background = GradientDrawable().apply {
-                setColor(Color.rgb(0x17, 0x1B, 0x24))
-                cornerRadius = dp(24).toFloat()
+                setColor(Color.BLACK)
+                setStroke(dp(1), Color.rgb(0x33, 0x33, 0x33))
+                cornerRadius = dp(28).toFloat()
             }
             isClickable = true
             addView(title)
@@ -66,7 +74,7 @@ class WakeySession(context: Context) : VoiceInteractionSession(context) {
             addView(stop, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { gravity = Gravity.END })
         }
         return FrameLayout(context).apply {
-            setBackgroundColor(Color.argb(0x55, 0, 0, 0))
+            setBackgroundColor(Color.argb(0x88, 0, 0, 0))
             // Tapping outside the card dismisses it; the request carries on.
             setOnClickListener { hide() }
             addView(card, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {

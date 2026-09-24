@@ -1,5 +1,6 @@
 package ai.wakey.android.ui.components
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -17,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -55,30 +57,35 @@ fun InputBar(onSend: (String) -> Unit, modifier: Modifier = Modifier) {
             focus.clearFocus()
         }
     }
-    Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Row(
-            Modifier
-                .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a request…") },
-                singleLine = true,
-                shape = RoundedCornerShape(28.dp),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { send() }),
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-            Spacer(Modifier.width(8.dp))
-            FilledIconButton(onClick = send, enabled = canSend, modifier = Modifier.size(52.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send")
+    Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
+        Column {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                Modifier
+                    .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Type a request…") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(28.dp),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { send() }),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedBorderColor = MaterialTheme.colorScheme.outline,
+                    ),
+                )
+                Spacer(Modifier.width(8.dp))
+                FilledIconButton(onClick = send, enabled = canSend, modifier = Modifier.size(52.dp)) {
+                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send")
+                }
             }
         }
     }

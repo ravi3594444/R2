@@ -5,6 +5,7 @@ import ai.wakey.android.ui.WakeySetup
 import ai.wakey.android.ui.notificationsNeedRuntimeGrant
 import ai.wakey.android.ui.theme.WakeyColors
 import android.os.Build
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -221,12 +222,13 @@ fun SetupNeededCard(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
-        color = WakeyColors.Amber.copy(alpha = 0.1f),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
         Column(Modifier.padding(start = 16.dp, top = 4.dp, bottom = 8.dp, end = 4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Tune, contentDescription = null, tint = WakeyColors.Amber, modifier = Modifier.size(20.dp))
+                Icon(Icons.Rounded.Tune, contentDescription = null, tint = WakeyColors.Attention, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(10.dp))
                 Text("Setup needed", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 IconButton(onClick = onHide) { Icon(Icons.Rounded.Close, contentDescription = "Hide setup reminder") }

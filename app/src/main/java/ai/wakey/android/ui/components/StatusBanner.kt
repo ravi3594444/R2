@@ -5,6 +5,7 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -59,14 +60,15 @@ fun StatusBanner(message: String?, isError: Boolean, onDismiss: () -> Unit, modi
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 shape = MaterialTheme.shapes.medium,
-                color = if (status.isError) colors.errorContainer else colors.secondaryContainer,
-                contentColor = if (status.isError) colors.onErrorContainer else colors.onSecondaryContainer,
+                color = colors.surfaceContainerHigh,
+                contentColor = colors.onSurface,
+                border = BorderStroke(1.dp, if (status.isError) colors.outline else colors.outlineVariant),
             ) {
                 Row(Modifier.padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         if (status.isError) Icons.Rounded.ErrorOutline else Icons.Rounded.Info,
                         contentDescription = null,
-                        tint = if (status.isError) colors.error else colors.primary,
+                        tint = colors.onSurface,
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(

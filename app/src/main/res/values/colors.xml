@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="wakey_background">#FF0E1116</color>
-    <color name="wakey_accent">#FF7C9CFF</color>
+    <color name="wakey_background">#FF000000</color>
+    <!-- Notification accent: a neutral grey stays visible on both light and dark notification shades. -->
+    <color name="wakey_accent">#FF737373</color>
 </resources>

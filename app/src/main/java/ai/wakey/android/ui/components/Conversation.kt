@@ -3,6 +3,7 @@ package ai.wakey.android.ui.components
 import ai.wakey.android.core.ChatEntry
 import ai.wakey.android.core.Speaker
 import ai.wakey.android.ui.formatTimingSummary
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -51,13 +53,14 @@ fun ChatEntryRow(entry: ChatEntry, modifier: Modifier = Modifier) {
 @Composable
 private fun UserMessage(entry: ChatEntry, modifier: Modifier) {
     Column(modifier.fillMaxWidth().padding(start = 48.dp), horizontalAlignment = Alignment.End) {
-        Surface(shape = UserBubble, color = MaterialTheme.colorScheme.primaryContainer) {
+        // The user's words in white, Wakey's in grey: the conversation reads at a glance without colour.
+        Surface(shape = UserBubble, color = MaterialTheme.colorScheme.primary) {
             SelectionContainer {
                 Text(
                     entry.text,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
                     style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = MaterialTheme.colorScheme.onPrimary,
                 )
             }
         }
@@ -78,10 +81,12 @@ private fun WakeyMessage(entry: ChatEntry, modifier: Modifier) {
     Column(modifier.fillMaxWidth().padding(end = 48.dp), horizontalAlignment = Alignment.Start) {
         Surface(
             shape = WakeyBubble,
-            color = if (entry.isError) colors.errorContainer else colors.surfaceContainerHigh,
-            contentColor = if (entry.isError) colors.onErrorContainer else colors.onSurface,
+            color = colors.surfaceContainerHigh,
+            contentColor = colors.onSurface,
+            // A problem gets an outline and an icon rather than a colour.
+            border = if (entry.isError) BorderStroke(1.dp, colors.outline) else null,
         ) {
-            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.Top) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
                 if (entry.isError) {
                     Icon(
                         Icons.Rounded.ErrorOutline,
@@ -114,7 +119,12 @@ fun ConversationHint(examples: List<String>, onExample: (String) -> Unit, modifi
         NoteText("Try asking", icon = Icons.Rounded.Lightbulb, modifier = Modifier.padding(horizontal = 4.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(examples) { example ->
-                SuggestionChip(onClick = { onExample(example) }, label = { Text(example) })
+                SuggestionChip(
+                    onClick = { onExample(example) },
+                    label = { Text(example) },
+                    shape = CircleShape,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                )
             }
         }
     }
