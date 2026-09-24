@@ -107,7 +107,7 @@ fun SettingsScreen(
                         subtitle = "Checked again whenever you come back to Wakey.",
                     ) { SetupChecklist(setup) }
 
-                    SettingsSection.Diagnostics -> DiagnosticsSection(state, onClearConversation = controller::clearConversation)
+                    SettingsSection.Diagnostics -> DiagnosticsSection(controller, state, settings)
                 }
             }
         }

@@ -78,6 +78,8 @@ class WakeySession(context: Context) : VoiceInteractionSession(context) {
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         val controller = WakeyApp.graph.controller
+        // The panel is visible, so this is a moment Android lets Wakey renew background listening.
+        controller.restoreWakeListening(context)
         controller.onAssistInvoked()
         scope?.cancel()
         scope = MainScope().also { session ->

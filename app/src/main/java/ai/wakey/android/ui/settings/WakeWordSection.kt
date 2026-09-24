@@ -4,6 +4,7 @@ import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AssistantController
 import ai.wakey.android.ui.components.NoteText
 import ai.wakey.android.ui.components.SectionCard
+import ai.wakey.android.ui.components.SwitchRow
 import ai.wakey.android.ui.normalizeWakePhrase
 import ai.wakey.android.wake.EncodedKeyword
 import androidx.compose.foundation.layout.Arrangement
@@ -98,8 +99,15 @@ fun WakeWordSection(controller: AssistantController, settings: WakeySettings) {
             }
         }
         SensitivitySlider(settings.wakeSensitivity) { value -> controller.updateSettings { it.copy(wakeSensitivity = value) } }
+        SwitchRow(
+            title = "Wake sound",
+            subtitle = "A short chime when Wakey hears the wake phrase.",
+            checked = settings.wakeSound,
+            onCheckedChange = { on -> controller.updateSettings { it.copy(wakeSound = on) } },
+        )
         NoteText(
-            "Detection runs entirely on this phone: listening for the wake word sends no audio anywhere.",
+            "Detection runs on this phone. When it is unsure, the audio from just before is sent to " +
+                "Deepgram to check that you said the wake phrase; otherwise no audio leaves the phone until you speak to Wakey.",
             icon = Icons.Rounded.PhoneAndroid,
         )
     }

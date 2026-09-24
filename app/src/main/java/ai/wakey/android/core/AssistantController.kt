@@ -8,6 +8,7 @@ import ai.wakey.android.agent.DeviceActions
 import ai.wakey.android.agent.FastCommand
 import ai.wakey.android.agent.FastCommandRouter
 import ai.wakey.android.audio.AudioEngine
+import ai.wakey.android.audio.WakeChime
 import ai.wakey.android.audio.WakeEvent
 import ai.wakey.android.config.SecretKind
 import ai.wakey.android.config.SecretStore
@@ -72,6 +73,7 @@ class AssistantController(
     private val device: DeviceActions,
     private val agent: AgentLoop,
     private val notifications: Notifications,
+    private val chime: WakeChime = WakeChime(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(AssistantUiState())
@@ -88,6 +90,14 @@ class AssistantController(
     /** The STT session opened to hear a spoken yes/no, closed when the confirmation resolves. */
     private var confirmSession: SttSession? = null
     private var turn: TurnClock? = null
+
+    /** [sessionToken] of the session confirming an unsure wake detection, until it is confirmed. */
+    private var checkToken = NO_CHECK
+    private val _wakeStats = MutableStateFlow(WakeStats())
+    val wakeStats: StateFlow<WakeStats> = _wakeStats.asStateFlow()
+
+    /** See [AudioEngine.micMuted]. */
+    val micMuted: StateFlow<Boolean> get() = audio.micMuted
     @Volatile private var keywordEncoder: KeywordEncoder? = null
 
     init {
@@ -118,6 +128,16 @@ class AssistantController(
         speaker.android.availableVoices()
         // The mic reopens itself after e.g. a phone call; only a lasting failure is shown.
         scope.launch { audio.micProblem.filterNotNull().collect { setStatus(it, error = true) } }
+        scope.launch {
+            audio.micMuted.drop(1).collect { muted ->
+                if (muted) {
+                    _wakeStats.update { it.copy(mutedEvents = it.mutedEvents + 1) }
+                    setStatus(MIC_MUTED_MESSAGE, error = true)
+                } else if (_state.value.statusMessage == MIC_MUTED_MESSAGE) {
+                    setStatus(null)
+                }
+            }
+        }
         // WakeService itself mirrors state into its notification; it reports start failures here.
         scope.launch { WakeService.startProblem.filterNotNull().collect { setStatus(it, error = true) } }
     }
@@ -131,11 +151,14 @@ class AssistantController(
     }
 
     /**
-     * Turns wake listening back on if the user left it on: when Wakey is opened, and when Android
-     * rebinds Wakey as the default assistant after a reboot or after its process was killed.
+     * Turns wake listening back on if the user left it on: when Wakey is opened, when its assistant
+     * panel shows, and when Android rebinds Wakey as the default assistant after a reboot or after
+     * its process was killed. A service that is already running is started again: done while Wakey
+     * is visible, that renews its right to use the microphone in the background, which Android may
+     * have withheld when the service last started (the microphone then records only silence).
      */
     fun restoreWakeListening(context: Context) {
-        if (settingsRepo.current.wakeListeningWanted && !_state.value.wakeServiceRunning) WakeService.start(context)
+        if (settingsRepo.current.wakeListeningWanted) WakeService.start(context)
     }
 
     /** Called by [WakeService] once it is in the foreground. Returns false if the mic could not start. */
@@ -180,21 +203,64 @@ class AssistantController(
     private fun onWakeDetected(event: WakeEvent) {
         scope.launch {
             if (session != null) return@launch
+            if (event.needsCheck) {
+                // Unsure: listen silently until the transcript shows whether the wake phrase was said.
+                // Never interrupts anything, since it may well be other speech.
+                if (pendingConfirm != null || taskJob?.isActive == true || speechJob?.isActive == true) return@launch
+                startListening(InputSource.WakeWord, event, check = true)
+                return@launch
+            }
+            _wakeStats.update { it.copy(wakes = it.wakes + 1) }
             val confirmation = pendingConfirm
             if (confirmation != null) {
                 // "Hey Wakey, yes" answers the pending confirmation instead of starting a new task.
                 speaker.stop()
+                playWakeSound()
                 confirmSession = startListening(InputSource.WakeWord, event, confirmation)
                 return@launch
             }
             // Barge-in: the wake word interrupts speech or a running task.
             if (taskJob?.isActive == true || speechJob?.isActive == true) cancelWork()
+            playWakeSound()
             startListening(InputSource.WakeWord, event)
         }
     }
 
+    private fun playWakeSound() {
+        if (settingsRepo.current.wakeSound) chime.play()
+    }
+
+    /** Drops an unconfirmed wake check so a tap or the assistant gesture can use the microphone. */
+    private fun cancelCheck() {
+        if (session != null && checkToken == sessionToken) cancelListening()
+    }
+
+    /** The transcript opened with the wake phrase: respond as to a sure detection. */
+    private fun confirmCheck() {
+        checkToken = NO_CHECK
+        _wakeStats.update { it.copy(checksConfirmed = it.checksConfirmed + 1) }
+        playWakeSound()
+        prewarmReplyVoice()
+        _state.update { it.copy(phase = AssistantPhase.Hearing, liveTranscript = "", statusMessage = null, statusIsError = false) }
+    }
+
+    private fun prewarmReplyVoice() {
+        val s = settingsRepo.current
+        if (s.speakReplies && s.ttsEngine == TtsEngine.Deepgram) speaker.deepgram.prewarmConnection()
+    }
+
+    /** Not the wake phrase (or nothing heard in time): close the stream without a word. */
+    private fun rejectCheck(heard: String) {
+        checkToken = NO_CHECK
+        _wakeStats.update {
+            it.copy(checksRejected = it.checksRejected + 1, lastRejectedHeard = heard.take(MAX_HEARD_CHARS).ifBlank { it.lastRejectedHeard })
+        }
+        cancelListening()
+    }
+
     /** Mic button: tap to talk, tap again to finish early. */
     fun onMicTap() {
+        cancelCheck()
         if (session != null) {
             session?.endTurn()
             return
@@ -205,6 +271,7 @@ class AssistantController(
 
     /** Wakey's assistant session was opened (e.g. power button held): listen as if "Hey Wakey" was said. */
     fun onAssistInvoked() {
+        cancelCheck()
         if (session != null) return
         pendingConfirm?.let { confirmation ->
             speaker.stop()
@@ -216,6 +283,7 @@ class AssistantController(
     }
 
     fun onPushToTalkPressed() {
+        cancelCheck()
         if (session != null) return
         cancelWork()
         _state.update { it.copy(pushToTalkActive = true) }
@@ -229,32 +297,38 @@ class AssistantController(
 
     /**
      * Opens a Deepgram session fed by the microphone. With [confirmation], the transcript answers that
-     * pending approval instead of becoming a new request. Returns the session, or null if none started.
+     * pending approval instead of becoming a new request. With [check], the session first confirms an
+     * unsure wake detection: nothing shows or sounds until the transcript opens with the wake phrase,
+     * and it closes silently if it doesn't. Returns the session, or null if none started.
      */
     private fun startListening(
         source: InputSource,
         wake: WakeEvent?,
         confirmation: CompletableDeferred<Boolean>? = null,
         reopened: Boolean = false,
+        check: Boolean = false,
     ): SttSession? {
         // Never leave an earlier session streaming behind the new one.
         if (session != null) cancelListening()
         val s = settingsRepo.current
         if (!secrets.has(SecretKind.DeepgramApiKey)) {
             audio.stopCommandStream()
-            reportProblem("Add your Deepgram API key in Settings to use voice.")
+            if (!check) reportProblem("Add your Deepgram API key in Settings to use voice.")
             return null
         }
         if (!isOnline()) {
             audio.stopCommandStream()
-            reportProblem("No internet connection. Voice needs Deepgram; typed direct commands still work.")
+            if (!check) reportProblem("No internet connection. Voice needs Deepgram; typed direct commands still work.")
             return null
         }
         val clock = TurnClock(source, SystemClock.elapsedRealtime(), wake?.detectionLatencyMs)
         if (confirmation == null) turn = clock
         val token = ++sessionToken
-        _state.update {
-            it.copy(phase = AssistantPhase.Hearing, liveTranscript = "", statusMessage = null, statusIsError = false)
+        checkToken = if (check) token else NO_CHECK
+        if (!check) {
+            _state.update {
+                it.copy(phase = AssistantPhase.Hearing, liveTranscript = "", statusMessage = null, statusIsError = false)
+            }
         }
         val listener = object : SttListener {
             override fun onConnected(connectMs: Long) = post(token) {
@@ -270,6 +344,16 @@ class AssistantController(
             override fun onTranscript(text: String, isFinal: Boolean, languages: List<String>, transcriptionMs: Long?) =
                 post(token) {
                     clock.lastEventAt = SystemClock.elapsedRealtime()
+                    if (checkToken == token) {
+                        when (WakeTranscript.check(text, s.wakePhrase, isFinal)) {
+                            WakeTranscript.Verdict.Undecided -> return@post
+                            WakeTranscript.Verdict.NotHeard -> {
+                                rejectCheck(text)
+                                return@post
+                            }
+                            WakeTranscript.Verdict.Heard -> confirmCheck()
+                        }
+                    }
                     val cleaned = stripWakePhrase(text, s.wakePhrase)
                     if (!isFinal) {
                         if (cleaned.isNotBlank()) clock.speechStarted = true
@@ -290,6 +374,10 @@ class AssistantController(
                 }
 
             override fun onError(error: SttError) = post(token) {
+                if (checkToken == token) {
+                    rejectCheck("")
+                    return@post
+                }
                 finishListening()
                 val message = when (error.kind) {
                     SttError.Kind.MissingKey -> "Add your Deepgram API key in Settings."
@@ -303,19 +391,21 @@ class AssistantController(
         val newSession = try {
             stt.open(SttConfig(model = s.sttModel, languageHints = s.languageMode.hints, keyterms = keyterms(s)), listener)
         } catch (e: Exception) {
+            checkToken = NO_CHECK
             audio.stopCommandStream()
-            reportProblem("Could not start speech recognition: ${e.message}")
+            if (!check) reportProblem("Could not start speech recognition: ${e.message}")
             return null
         }
         session = newSession
         try {
             audio.startCommandStream { buffer, length -> newSession.sendPcm(buffer, length) }
         } catch (e: Exception) {
+            checkToken = NO_CHECK
             cancelListening()
-            reportProblem("Could not use the microphone: ${e.message}")
+            if (!check) reportProblem("Could not use the microphone: ${e.message}")
             return null
         }
-        if (s.speakReplies && s.ttsEngine == TtsEngine.Deepgram) speaker.deepgram.prewarmConnection()
+        if (!check) prewarmReplyVoice()
         listenWatchdog?.cancel()
         listenWatchdog = scope.launch { watchSession(newSession, clock, confirmation != null) }
         return newSession
@@ -331,6 +421,10 @@ class AssistantController(
             if (session !== watched) return
             val now = SystemClock.elapsedRealtime()
             when {
+                checkToken == sessionToken -> if (now - clock.startedAt > CHECK_TIMEOUT_MS) {
+                    rejectCheck("")
+                    return
+                }
                 !clock.speechStarted && !pushToTalk && now - clock.startedAt > NO_SPEECH_TIMEOUT_MS -> {
                     cancelListening()
                     if (forConfirmation) return
@@ -357,6 +451,7 @@ class AssistantController(
 
     /** Stop streaming audio; the STT session closes itself after a final transcript. */
     private fun finishListening() {
+        checkToken = NO_CHECK
         listenWatchdog?.cancel()
         listenWatchdog = null
         session = null
@@ -703,6 +798,13 @@ class AssistantController(
 
     companion object {
         private const val NO_SPEECH_TIMEOUT_MS = 7_000L
+        /** An unsure wake detection must be confirmed by a transcript within this long of it. */
+        private const val CHECK_TIMEOUT_MS = 5_000L
+        private const val NO_CHECK = -1L
+        private const val MAX_HEARD_CHARS = 80
+        internal const val MIC_MUTED_MESSAGE =
+            "Android is muting Wakey's microphone. Turn on “Microphone access” in quick settings; " +
+                "if it is on, open Wakey once so Android lets it listen in the background."
         private const val MAX_UTTERANCE_MS = 22_000L
         private const val MAX_PUSH_TO_TALK_MS = 30_000L
         /** Flux ends a turn within eot_timeout (3 s) of silence, so this long without events means a dead link. */
@@ -730,51 +832,11 @@ class AssistantController(
             "no", "nope", "don't", "do not", "cancel", "stop", "nahi", "nahin", "mat karo", "नहीं", "मत करो", "रुको",
         )
 
-        private val MISHEARD_WAKEY = Regex("[bvw][aeiouy]+(?:ck|kk|k|c|q)(?:ey|ie|ee|y|i|ing|in|en)")
-
         internal fun isStopPhrase(text: String): Boolean =
             text.lowercase().trim(' ', '.', '!', '?', '।', ',') in STOP_PHRASES
 
         /** Removes a leading wake phrase ("Hey Wakey, …") that the pre-roll audio may include. */
-        internal fun stripWakePhrase(text: String, wakePhrase: String): String {
-            val words = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-            val wakeWords = wakePhrase.lowercase().split(' ').filter { it.isNotEmpty() }
-            if (words.isEmpty() || wakeWords.isEmpty()) return text.trim()
-            fun norm(w: String) = w.lowercase().trim(',', '.', '!', '?', '।', ':', ';')
-            var i = 0
-            var matched = 0
-            // Allow the transcript to start mid-phrase (e.g. only "Wakey," survived the pre-roll).
-            while (i < words.size && matched < wakeWords.size) {
-                val w = norm(words[i])
-                val idx = wakeWords.indexOfFirst { similar(it, w) }
-                if (idx < 0 || idx < matched) break
-                matched = idx + 1
-                i++
-            }
-            return if (i == 0) text.trim() else words.drop(i).joinToString(" ").trimStart(',', '.', ' ')
-        }
-
-        private fun similar(a: String, b: String): Boolean {
-            if (a == b) return true
-            // Flux often hears "Wakey" as Becky, Vicky, Wiki or waking right after the wake word.
-            if (a == "wakey" && MISHEARD_WAKEY.matches(b)) return true
-            if (a.length < 2 || b.length < 2) return false
-            return levenshtein(a, b) <= if (a.length <= 3) 1 else 2
-        }
-
-        private fun levenshtein(a: String, b: String): Int {
-            val dp = IntArray(b.length + 1) { it }
-            for (i in 1..a.length) {
-                var prev = dp[0]
-                dp[0] = i
-                for (j in 1..b.length) {
-                    val tmp = dp[j]
-                    dp[j] = minOf(dp[j] + 1, dp[j - 1] + 1, prev + if (a[i - 1] == b[j - 1]) 0 else 1)
-                    prev = tmp
-                }
-            }
-            return dp[b.length]
-        }
+        internal fun stripWakePhrase(text: String, wakePhrase: String): String = WakeTranscript.strip(text, wakePhrase)
 
         internal fun languageTagFor(reply: String, languages: List<String>): String? = when {
             reply.any { it in 'ऀ'..'ॿ' } -> "hi-IN"

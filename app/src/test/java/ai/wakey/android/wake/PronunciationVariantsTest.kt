@@ -46,5 +46,35 @@ class PronunciationVariantsTest {
         }
     }
 
+    @Test
+    fun `check spellings reduce the first vowel of an ee-ending word`() {
+        assertEquals(
+            listOf("HEY WIKY", "HEYWIKY", "HE WIKY", "HEY WIKI", "HEYWIKI", "HE WIKI"),
+            checks("HEY WAKEY"),
+        )
+        assertEquals(listOf("HEY BIDDY", "HEYBIDDY", "HE BIDDY", "HEY BIDDI", "HEYBIDDI", "HE BIDDI"), checks("HEY BUDDY"))
+        assertEquals(listOf("WIKY", "WIKI"), checks("WAKEY"))
+    }
+
+    @Test
+    fun `phrases without such a word get no check spellings`() {
+        assertEquals(emptyList<String>(), checks("HELLO COMPUTER"))
+        // SIRI's first vowel is already I.
+        assertEquals(emptyList<String>(), checks("OK SIRI"))
+    }
+
+    @Test
+    fun `check spellings never repeat the phrase or its variants`() {
+        for (phrase in listOf("HEY WAKEY", "WAKEY WAKEY", "HEY WIKY")) {
+            val words = phrase.split(' ')
+            val result = PronunciationVariants.checksOf(words)
+            assertTrue(phrase, words !in result)
+            assertTrue(phrase, result.none { it in PronunciationVariants.of(words) })
+            assertTrue(result.size <= PronunciationVariants.MAX_CHECKS)
+        }
+    }
+
+    private fun checks(phrase: String) = PronunciationVariants.checksOf(phrase.split(' ')).map { it.joinToString(" ") }
+
     private fun variants(phrase: String) = PronunciationVariants.of(phrase.split(' ')).map { it.joinToString(" ") }
 }

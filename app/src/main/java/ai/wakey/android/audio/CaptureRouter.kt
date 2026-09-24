@@ -160,7 +160,7 @@ internal class CaptureRouter(
         mode = Mode.Holding
         epoch++
         val latencyMs = detection.keywordEndLag?.let { it * 1000 / AudioEngine.SAMPLE_RATE + (now - readAtMs) }
-        return WakeEvent(detection.phrase, now, latencyMs) to callback
+        return WakeEvent(detection.phrase, now, latencyMs, detection.needsCheck) to callback
     }
 
     private fun deliver(block: ShortArray, count: Int) {

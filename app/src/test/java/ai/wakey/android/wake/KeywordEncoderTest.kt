@@ -57,6 +57,20 @@ class KeywordEncoderTest {
     }
 
     @Test
+    fun `default phrase adds check lines under their own tag`() {
+        val keyword = encoder.encode("Hey Wakey")
+        // spm.encode("HEY WIKY"), spm.encode("HEYWIKY"), ...
+        assertEquals(
+            listOf("▁HE Y ▁W I K Y", "▁HE Y W I K Y", "▁HE ▁W I K Y", "▁HE Y ▁W I K I", "▁HE Y W I K I", "▁HE ▁W I K I"),
+            keyword.checkVariants.map { it.joinToString(" ") },
+        )
+        val line = keyword.toSherpaKeywords(1.5f, 0.18f, KeywordScoring(1.5f, 0.10f))
+        assertEquals(12, line.split('/').size)
+        assertTrue(line.endsWith("/▁HE ▁W I K I :1.50 #0.10 @HEY_WAKEY__CHECK"))
+        assertEquals(SherpaWakeWordDetector.scoringFor(0.5f).threshold - 0.08f, SherpaWakeWordDetector.checkScoringFor(0.5f).threshold, 1e-6f)
+    }
+
+    @Test
     fun `variant tokens match python sentencepiece for the respelled phrase`() {
         // spm.encode("HEY BUDDEY") etc.; the phrase and its tag stay the user's.
         val keyword = encoder.encode("hey buddy")

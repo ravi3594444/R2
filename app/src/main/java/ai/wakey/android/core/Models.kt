@@ -70,6 +70,20 @@ data class PendingConfirmation(
     val detail: String,
 )
 
+/** Wake-word activity since Wakey started, for Diagnostics. */
+data class WakeStats(
+    /** Sure detections that opened the microphone stream. */
+    val wakes: Int = 0,
+    /** Unsure detections confirmed by the transcript. */
+    val checksConfirmed: Int = 0,
+    /** Unsure detections dropped because the transcript did not start with the wake phrase. */
+    val checksRejected: Int = 0,
+    /** What Deepgram heard for the last dropped check, for tuning. */
+    val lastRejectedHeard: String? = null,
+    /** Times the open microphone went silent because Android muted it. */
+    val mutedEvents: Int = 0,
+)
+
 data class AssistantUiState(
     val phase: AssistantPhase = AssistantPhase.Idle,
     val wakeServiceRunning: Boolean = false,

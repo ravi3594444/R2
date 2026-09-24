@@ -15,17 +15,37 @@ data class EncodedKeyword(
      * ["▁HE", "Y", "▁WA", "K", "Y"] for "HEY WAKY". Spotted in the same stream and reported as [phrase].
      */
     val variants: List<List<String>> = emptyList(),
+    /**
+     * Tokens of looser sound-alikes ("HEY WIKY", "HEY RICKY"), spotted in the same stream under
+     * [checkTag]. They catch many wake phrases the model mishears, and some other speech, so a
+     * detection of one is confirmed with speech recognition before Wakey responds.
+     */
+    val checkVariants: List<List<String>> = emptyList(),
 ) {
     /** Keyword tag reported back by sherpa-onnx on detection, for [tokens] and every variant. */
     val tag: String get() = phrase.replace(' ', '_')
 
+    /** Tag reported for [checkVariants]. */
+    val checkTag: String get() = tag + CHECK_SUFFIX
+
     /**
      * The keywords of one sherpa-onnx stream: a `tokens :boost #threshold @TAG` line for [tokens] and
-     * each variant, joined by '/', e.g. `▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY/▁HE Y ▁WA K Y :1.50 ...`.
+     * each variant, joined by '/', e.g. `▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY/▁HE Y ▁WA K Y :1.50 ...`,
+     * then a line per check variant scored with [check] and tagged [checkTag].
      */
-    fun toSherpaKeywords(boostScore: Float, threshold: Float): String {
+    fun toSherpaKeywords(boostScore: Float, threshold: Float, check: KeywordScoring? = null): String {
         val scoring = " :%.2f #%.2f @%s".format(Locale.US, boostScore, threshold, tag)
-        return (listOf(tokens) + variants).joinToString("/") { it.joinToString(" ") + scoring }
+        val sure = listOf(tokens) + variants
+        val lines = sure.map { it.joinToString(" ") + scoring }.toMutableList()
+        if (check != null) {
+            val checkScoring = " :%.2f #%.2f @%s".format(Locale.US, check.boost, check.threshold, checkTag)
+            checkVariants.filter { it !in sure }.mapTo(lines) { it.joinToString(" ") + checkScoring }
+        }
+        return lines.joinToString("/")
+    }
+
+    companion object {
+        const val CHECK_SUFFIX = "__CHECK"
     }
 }
 
@@ -38,7 +58,8 @@ class KeywordEncodingException(message: String) : IllegalArgumentException(messa
  * The tokens are exactly what Python `sentencepiece` produces for `encode(phrase.upper())`
  * (checked against 48 reference phrases in the unit tests). Phrases the detector cannot spot
  * reliably are rejected with a message that can be shown as-is in Settings. Each phrase also gets
- * the tokens of its [PronunciationVariants], which the detector spots under the same tag.
+ * the tokens of its [PronunciationVariants]: the detector spots common ones under the same tag and
+ * looser sound-alikes under a tag whose detections are confirmed first.
  *
  * @param bpeModel the model's `bpe.model` (a SentencePiece unigram model).
  * @param validTokens the symbols in the model's `tokens.txt`.
@@ -69,12 +90,15 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         if (display.count { it.isAsciiLetter() } < MIN_LETTERS || tokens.size < MIN_TOKENS) {
             fail("“$display” is too short to detect reliably. Use a longer phrase, like “Hey Wakey”.")
         }
-        val variants = PronunciationVariants.of(upper)
-            .mapNotNull { variant -> segment(variant)?.takeIf { pieces -> pieces.all { it in validTokens } } }
-            .filter { it != tokens }
-            .distinct()
-        return EncodedKeyword(upper.joinToString(" "), tokens, variants)
+        val variants = spell(PronunciationVariants.of(upper)).filter { it != tokens }
+        val checks = spell(PronunciationVariants.checksOf(upper)).filter { it != tokens && it !in variants }
+        return EncodedKeyword(upper.joinToString(" "), tokens, variants, checks)
     }
+
+    /** Tokens of each respelling the model's vocabulary can express, without duplicates. */
+    private fun spell(respellings: List<List<String>>): List<List<String>> = respellings
+        .mapNotNull { words -> segment(words)?.takeIf { pieces -> pieces.all { it in validTokens } } }
+        .distinct()
 
     private fun segment(words: List<String>): List<String>? =
         model.segment((if (model.addDummyPrefix) WORD_START else "") + words.joinToString(WORD_START))

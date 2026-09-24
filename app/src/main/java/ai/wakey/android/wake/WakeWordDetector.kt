@@ -23,4 +23,6 @@ data class WakeDetection(
     val phrase: String,
     val keywordStartLag: Long?,
     val keywordEndLag: Long?,
+    /** A loose sound-alike fired: confirm with speech recognition before responding. */
+    val needsCheck: Boolean = false,
 )

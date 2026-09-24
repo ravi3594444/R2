@@ -34,6 +34,8 @@ data class WakeySettings(
     val onboardingDone: Boolean = false,
     /** The user wants "Hey Wakey" on; restored after the app or phone restarts. */
     val wakeListeningWanted: Boolean = false,
+    /** A short chime when the wake phrase is heard. */
+    val wakeSound: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_WAKE_PHRASE = "Hey Wakey"

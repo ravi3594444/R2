@@ -24,6 +24,8 @@ data class WakeEvent(
     val detectedAtMs: Long,
     /** Keyword audio end → detection, when the detector reports timestamps. */
     val detectionLatencyMs: Long?,
+    /** Only a loose sound-alike matched: confirm the phrase in the transcript before responding. */
+    val needsCheck: Boolean = false,
 )
 
 /**
@@ -58,6 +60,14 @@ class AudioEngine(private val context: Context) {
      * the engine keeps reopening the microphone; it clears once audio flows again or the mic closes.
      */
     val micProblem: StateFlow<String?> = _micProblem.asStateFlow()
+
+    private val _micMuted = MutableStateFlow(false)
+
+    /**
+     * True while the open microphone delivers only digital silence: Android is muting Wakey (the
+     * microphone privacy toggle, or no right to record in the background). See [MutedMicDetector].
+     */
+    val micMuted: StateFlow<Boolean> = _micMuted.asStateFlow()
 
     private val router = CaptureRouter(SystemClock::elapsedRealtime) { message, error -> Log.w(TAG, message, error) }
     private var encoder: KeywordEncoder? = null
@@ -198,6 +208,7 @@ class AudioEngine(private val context: Context) {
         capture = null
         _level.value = 0f
         _micProblem.value = null
+        _micMuted.value = false
     }
 
     private class AudioRecordInput(private val record: AudioRecord) : MicInput {
@@ -217,12 +228,14 @@ class AudioEngine(private val context: Context) {
     /** The capture thread: reads the mic, and reopens it after failures, until [stop]. */
     private inner class Capture(first: MicInput) {
         private val meter = LevelMeter()
+        private val muteDetector = MutedMicDetector()
         private val loop = CaptureLoop(
             blockSamples = BLOCK_SAMPLES,
             open = ::openRecord,
             onAudio = { buffer, count ->
                 val readAt = SystemClock.elapsedRealtime()
                 meter.add(buffer, count)?.let { _level.value = it }
+                muteDetector.add(buffer, count)?.let { _micMuted.value = it }
                 router.onAudio(buffer, count, readAt)
             },
             onReopened = router::onMicOpened,
