@@ -396,7 +396,10 @@ class AssistantController(
             var isError = false
             try {
                 _state.update { it.copy(phase = AssistantPhase.Thinking, recentActions = emptyList(), currentAction = null) }
-                val fast = FastCommandRouter.route(text)
+                // A garbled app name ("u two colo") is better handled by the agent than a "no such app" reply.
+                val fast = FastCommandRouter.route(text)?.takeUnless {
+                    it is FastCommand.OpenApp && secrets.has(SecretKind.LlmApiKey) && !device.canOpen(it.appName)
+                }
                 if (fast != null) {
                     clock.route = "fast"
                     val info = AgentActionInfo(1, 1, describe(fast), "fast_command")
@@ -725,6 +728,8 @@ class AssistantController(
             "no", "nope", "don't", "do not", "cancel", "stop", "nahi", "nahin", "mat karo", "नहीं", "मत करो", "रुको",
         )
 
+        private val MISHEARD_WAKEY = Regex("[bvw][aeiouy]+(?:ck|kk|k|c|q)(?:ey|ie|ee|y|i|ing|in|en)")
+
         internal fun isStopPhrase(text: String): Boolean =
             text.lowercase().trim(' ', '.', '!', '?', '।', ',') in STOP_PHRASES
 
@@ -749,6 +754,8 @@ class AssistantController(
 
         private fun similar(a: String, b: String): Boolean {
             if (a == b) return true
+            // Flux often hears "Wakey" as Becky, Vicky, Wiki or waking right after the wake word.
+            if (a == "wakey" && MISHEARD_WAKEY.matches(b)) return true
             if (a.length < 2 || b.length < 2) return false
             return levenshtein(a, b) <= if (a.length <= 3) 1 else 2
         }

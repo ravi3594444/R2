@@ -74,6 +74,9 @@ class DeviceActions(
     /** Like [openApp], but reads the package list off the caller's thread and reports the target package. */
     internal suspend fun startApp(name: String): AppLaunch = launch(name, withContext(Dispatchers.IO) { resolve(name) })
 
+    /** True if [name] matches an installed app (or a known app type), without launching anything. */
+    suspend fun canOpen(name: String): Boolean = withContext(Dispatchers.IO) { resolve(name) != null }
+
     private suspend fun openAndVerify(name: String): ActionOutcome {
         val launch = startApp(name)
         val packageName = launch.packageName ?: return launch.outcome
