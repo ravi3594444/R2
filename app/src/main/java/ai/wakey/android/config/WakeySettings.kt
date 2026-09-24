@@ -32,6 +32,8 @@ data class WakeySettings(
     val llmModel: String = DEFAULT_LLM_MODEL,
     val maxAgentSteps: Int = DEFAULT_MAX_STEPS,
     val onboardingDone: Boolean = false,
+    /** The user wants "Hey Wakey" on; restored after the app or phone restarts. */
+    val wakeListeningWanted: Boolean = false,
 ) {
     companion object {
         const val DEFAULT_WAKE_PHRASE = "Hey Wakey"

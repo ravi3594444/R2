@@ -46,6 +46,13 @@ class MainActivity : ComponentActivity() {
             WakeyTheme { WakeyRoot(controller) }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Wakey is visible now, so a microphone service may start even if Android had stopped it.
+        WakeyApp.graph.controller.restoreWakeListening(this)
+    }
+
 }
 
 private enum class Screen { Main, Settings, Setup }

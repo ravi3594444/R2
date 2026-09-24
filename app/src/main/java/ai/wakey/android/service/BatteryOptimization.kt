@@ -11,8 +11,8 @@ import android.provider.Settings
  * Battery-optimisation status and a shortcut to change it. An exemption keeps wake listening
  * reliable with the screen off on phones that restrict background work aggressively.
  *
- * Opens the settings list rather than the direct "allow?" dialog, which would need the
- * REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission.
+ * Asks with the direct "allow?" dialog first (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS); phones
+ * without it get the settings list or the app-info page.
  */
 object BatteryOptimization {
     /** True when the user has exempted Wakey from battery optimisation. */
@@ -24,6 +24,7 @@ object BatteryOptimization {
      * screen. Returns false if neither could be opened.
      */
     fun openSettings(context: Context): Boolean = listOf(
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
         Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
     ).any { intent ->

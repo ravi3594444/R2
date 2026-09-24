@@ -22,8 +22,9 @@ import kotlinx.coroutines.launch
  * wake listening alive with the screen off (partial wake lock) and shows the listening
  * notification with working Stop and Turn off actions.
  *
- * Not sticky: a system restart would start a microphone service from the background, which
- * Android 14+ forbids, so after being killed it stays off until the user turns it on again.
+ * Sticky: if Android kills it, it restarts when it may. A background restart may start the
+ * microphone only while Wakey is the default assistant (Android's exemption for apps providing the
+ * VoiceInteractionService); otherwise it stops itself and comes back the next time Wakey is opened.
  */
 class WakeService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
@@ -39,7 +40,7 @@ class WakeService : LifecycleService() {
             isRunning -> Unit
             else -> startListening()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startListening() {

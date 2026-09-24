@@ -49,6 +49,7 @@ class SettingsRepository(context: Context) {
             llmModel = prefs.getString("llm_model", d.llmModel) ?: d.llmModel,
             maxAgentSteps = prefs.getInt("max_agent_steps", d.maxAgentSteps),
             onboardingDone = prefs.getBoolean("onboarding_done", d.onboardingDone),
+            wakeListeningWanted = prefs.getBoolean("wake_listening_wanted", d.wakeListeningWanted),
         ).let(::sanitize)
     }
 
@@ -67,6 +68,7 @@ class SettingsRepository(context: Context) {
             .putString("llm_model", s.llmModel)
             .putInt("max_agent_steps", s.maxAgentSteps)
             .putBoolean("onboarding_done", s.onboardingDone)
+            .putBoolean("wake_listening_wanted", s.wakeListeningWanted)
             .apply()
     }
 

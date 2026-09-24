@@ -1,7 +1,9 @@
 package ai.wakey.android.ui
 
 import ai.wakey.android.accessibility.AccessibilityStatus
+import ai.wakey.android.service.BatteryOptimization
 import android.Manifest
+import android.app.role.RoleManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -31,6 +33,8 @@ data class SetupStatus(
     val notifications: Boolean,
     val screenControl: Boolean,
     val batteryUnrestricted: Boolean,
+    /** Wakey is the default digital assistant: long-press power/home and background restarts work. */
+    val defaultAssistant: Boolean,
 ) {
     /** The main screen's "Setup needed" card covers only what blocks voice or phone control. */
     val needsAttention: Boolean get() = !microphone || !screenControl
@@ -42,6 +46,7 @@ data class SetupStatus(
             screenControl = AccessibilityStatus.isEnabled(context),
             batteryUnrestricted = context.getSystemService(PowerManager::class.java)
                 ?.isIgnoringBatteryOptimizations(context.packageName) ?: true,
+            defaultAssistant = context.getSystemService(RoleManager::class.java)?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true,
         )
     }
 }
@@ -158,9 +163,14 @@ class WakeySetup internal constructor(private val context: Context) {
         open(AccessibilityStatus.settingsIntent())
     }
 
-    /** The system list of battery-optimisation exemptions; some phones lack it, so fall back to App info. */
+    /** The direct "allow?" dialog, else the system exemption list, else App info. */
     fun openBatterySettings() {
-        if (!open(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))) openAppSettings()
+        if (!BatteryOptimization.openSettings(context)) openAppSettings()
+    }
+
+    /** "Digital assistant app" lives under Default apps; the assistant role can't be requested directly. */
+    fun openAssistantSettings() {
+        if (!open(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))) open(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
     }
 
     private fun open(intent: Intent): Boolean = try {

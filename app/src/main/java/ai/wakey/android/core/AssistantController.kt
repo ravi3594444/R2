@@ -124,7 +124,16 @@ class AssistantController(
 
     /** Called from the visible UI. Starting the foreground service from here satisfies Android 14+. */
     fun setWakeListening(context: Context, enabled: Boolean) {
+        settingsRepo.update { it.copy(wakeListeningWanted = enabled) }
         if (enabled) WakeService.start(context) else WakeService.stop(context)
+    }
+
+    /**
+     * Turns wake listening back on if the user left it on: when Wakey is opened, and when Android
+     * rebinds Wakey as the default assistant after a reboot or after its process was killed.
+     */
+    fun restoreWakeListening(context: Context) {
+        if (settingsRepo.current.wakeListeningWanted && !_state.value.wakeServiceRunning) WakeService.start(context)
     }
 
     /** Called by [WakeService] once it is in the foreground. Returns false if the mic could not start. */
@@ -160,6 +169,7 @@ class AssistantController(
     /** Notification "Turn off": stop everything and end the foreground service. */
     fun turnOff() {
         stop(silent = true)
+        settingsRepo.update { it.copy(wakeListeningWanted = false) }
         WakeService.stop(appContext)
     }
 
@@ -189,6 +199,18 @@ class AssistantController(
         }
         cancelWork()
         startListening(InputSource.Mic, null)
+    }
+
+    /** Wakey's assistant session was opened (e.g. power button held): listen as if "Hey Wakey" was said. */
+    fun onAssistInvoked() {
+        if (session != null) return
+        pendingConfirm?.let { confirmation ->
+            speaker.stop()
+            confirmSession = startListening(InputSource.Assistant, null, confirmation)
+            return
+        }
+        cancelWork()
+        startListening(InputSource.Assistant, null)
     }
 
     fun onPushToTalkPressed() {

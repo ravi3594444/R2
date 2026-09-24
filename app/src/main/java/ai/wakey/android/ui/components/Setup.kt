@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.KeyboardVoice
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
@@ -139,6 +140,32 @@ fun ScreenControlSetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
 }
 
 @Composable
+fun AssistantSetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
+    SetupItem(
+        icon = Icons.Rounded.KeyboardVoice,
+        title = "Background listening for \u201cHey Wakey\u201d",
+        done = setup.status.defaultAssistant,
+        doneLabel = "On",
+        todoLabel = "Off",
+        description = "So \u201cHey Wakey\u201d keeps working when the app is closed, the screen is off or the phone restarts. " +
+            "Android allows background listening only for the phone's digital assistant app, so set Wakey as it.",
+        modifier = modifier,
+        details = {
+            if (!setup.status.defaultAssistant) {
+                Text(
+                    "Settings \u2192 Apps \u2192 Default apps \u2192 Digital assistant app \u2192 Wakey",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                NoteText("Nothing else changes: you still just say \u201cHey Wakey\u201d. (Holding the power button will also open Wakey instead of Google.)")
+            }
+        },
+    ) {
+        FilledTonalButton(onClick = setup::openAssistantSettings) { Text("Open assistant settings") }
+    }
+}
+
+@Composable
 fun BatterySetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
     SetupItem(
         icon = Icons.Rounded.BatteryChargingFull,
@@ -146,7 +173,7 @@ fun BatterySetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
         done = setup.status.batteryUnrestricted,
         doneLabel = "Unrestricted",
         todoLabel = "Optimised",
-        description = "Android may pause the wake word while the screen is off. Exempt Wakey to keep it reliable.",
+        description = "Android may pause the wake word while the screen is off or the app is closed. Allow Wakey to run in the background.",
         modifier = modifier,
         details = {
             if (!setup.status.batteryUnrestricted) {
@@ -154,7 +181,7 @@ fun BatterySetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
             }
         },
     ) {
-        FilledTonalButton(onClick = setup::openBatterySettings) { Text("Open battery settings") }
+        FilledTonalButton(onClick = setup::openBatterySettings) { Text("Allow background use") }
     }
 }
 
@@ -172,6 +199,7 @@ fun LockedPhoneNote(modifier: Modifier = Modifier) {
 fun SetupChecklist(setup: WakeySetup, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(16.dp)) {
         MicrophoneSetupItem(setup)
+        AssistantSetupItem(setup)
         NotificationsSetupItem(setup)
         ScreenControlSetupItem(setup)
         BatterySetupItem(setup)

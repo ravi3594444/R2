@@ -11,7 +11,9 @@ enum class AssistantPhase(val label: String) {
 }
 
 /** How a request entered the pipeline. Voice and text share everything after transcription. */
-enum class InputSource(val label: String) { WakeWord("wake word"), Mic("mic"), PushToTalk("push-to-talk"), Text("typed") }
+enum class InputSource(val label: String) {
+    WakeWord("wake word"), Mic("mic"), PushToTalk("push-to-talk"), Assistant("assistant button"), Text("typed"),
+}
 
 enum class Speaker { User, Wakey, System }
 
