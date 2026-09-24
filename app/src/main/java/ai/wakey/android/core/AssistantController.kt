@@ -116,6 +116,8 @@ class AssistantController(
         )
         // Bind Android TTS early so Settings can list installed voices on first open.
         speaker.android.availableVoices()
+        // The mic reopens itself after e.g. a phone call; only a lasting failure is shown.
+        scope.launch { audio.micProblem.filterNotNull().collect { setStatus(it, error = true) } }
         // WakeService itself mirrors state into its notification; it reports start failures here.
         scope.launch { WakeService.startProblem.filterNotNull().collect { setStatus(it, error = true) } }
     }
