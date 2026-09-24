@@ -43,6 +43,15 @@ class DeepgramFluxSttTest {
     }
 
     @Test
+    fun `listen URL carries the end-of-turn tuning`() {
+        val config = SttConfig(model = "flux-general-multi", languageHints = emptyList())
+        val url = fluxListenUrl(DeepgramFluxStt.LISTEN_ENDPOINT, config, FluxTurnTuning(eotThreshold = "0.65", eotTimeoutMs = 1_500))
+        assertEquals("0.65", url.queryParameter("eot_threshold"))
+        assertEquals("1500", url.queryParameter("eot_timeout_ms"))
+        assertEquals(FluxTurnTuning("0.7", 3_000), FluxTurnTuning())
+    }
+
+    @Test
     fun `listen URL omits language hints for models that reject them`() {
         val url = fluxListenUrl(
             DeepgramFluxStt.LISTEN_ENDPOINT,

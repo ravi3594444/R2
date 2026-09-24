@@ -6,21 +6,27 @@ import java.text.Normalizer
  * Matches whole-utterance simple commands (English, Hindi, Hinglish) so they run on-device with no
  * LLM call. Anything with a second clause or intent ("open Chrome and search for cats") returns
  * null and goes to the agent instead.
+ *
+ * Words are compared in one spoken form ([SPOKEN_FORMS]): speech-to-text writes the same command
+ * in Latin or Devanagari script, often mixed ("torch जलाओ", "Slashlight band करो"), and mishears
+ * Hinglish verbs ("YouTube Colo" for kholo). App names keep the words as heard, for [AppMatcher].
  */
 object FastCommandRouter {
 
     fun route(utterance: String): FastCommand? {
-        val words = stripFillers(tokenize(utterance))
-        if (words.isEmpty()) return null
-        val lower = words.map { it.lowercase() }
-        if (lower.any { it in CONJUNCTIONS }) return null
-        val phrase = lower.joinToString(" ")
-        when (phrase) {
+        val heard = tokenize(utterance)
+        val allSpoken = heard.map(::spokenForm)
+        val kept = withoutFillers(allSpoken)
+        if (kept.isEmpty()) return null
+        val words = heard.slice(kept)
+        val spoken = allSpoken.slice(kept)
+        if (spoken.any { it in CONJUNCTIONS }) return null
+        when (spoken.joinToString(" ")) {
             in HOME_PHRASES -> return FastCommand.GoHome
             in BACK_PHRASES -> return FastCommand.GoBack
         }
-        torch(lower)?.let { return FastCommand.Torch(it) }
-        return openApp(words, lower)
+        torch(spoken)?.let { return FastCommand.Torch(it) }
+        return openApp(words, spoken)
     }
 
     /**
@@ -35,22 +41,35 @@ object FastCommandRouter {
             .split(' ')
             .filter { it.isNotEmpty() }
 
-    private fun stripFillers(words: List<String>): List<String> {
-        var result = words
+    private fun spokenForm(word: String): String {
+        val lower = word.lowercase()
+        SPOKEN_FORMS[lower]?.let { return it }
+        // "Clashlight", "Slashlight": one or two letters off a long torch noun.
+        if (lower.length >= 8) LONG_TORCH_NOUNS.firstOrNull { AppMatcher.editDistance(lower, it) <= 2 }?.let { return it }
+        return lower
+    }
+
+    /** Indices of [words] left once leading and trailing fillers and a leftover wake word are dropped. */
+    private fun withoutFillers(words: List<String>): IntRange {
+        var start = 0
+        var end = words.size
         var changed = true
-        while (changed && result.isNotEmpty()) {
+        while (changed && start < end) {
             changed = false
-            val lower = result.map { it.lowercase() }
-            LEADING_FILLERS.firstOrNull { lower.startsWith(it) }?.let {
-                result = result.drop(it.size)
+            val rest = words.subList(start, end)
+            val lead = LEADING_FILLERS.firstOrNull { rest.startsWith(it) }?.size
+                ?: 1.takeIf { rest.size > 1 && WAKE_NAME.matches(rest[0]) }
+            if (lead != null) {
+                start += lead
                 changed = true
+                continue
             }
-            TRAILING_FILLERS.firstOrNull { lower.endsWith(it) }?.let {
-                result = result.dropLast(it.size)
+            TRAILING_FILLERS.firstOrNull { rest.endsWith(it) }?.let {
+                end -= it.size
                 changed = true
             }
         }
-        return result
+        return start until end
     }
 
     /** True/false for a torch on/off command, null if [words] is not exactly one. */
@@ -65,17 +84,18 @@ object FastCommandRouter {
         }
     }
 
-    private fun openApp(words: List<String>, lower: List<String>): FastCommand.OpenApp? {
-        val range = OPEN_PREFIXES.firstOrNull { lower.startsWith(it) }?.let { it.size until words.size }
-            ?: OPEN_SUFFIXES.firstOrNull { lower.endsWith(it) }?.let { 0 until words.size - it.size }
+    private fun openApp(words: List<String>, spoken: List<String>): FastCommand.OpenApp? {
+        val range = OPEN_PREFIXES.firstOrNull { spoken.startsWith(it) }?.let { it.size until words.size }
+            ?: OPEN_SUFFIXES.firstOrNull { spoken.endsWith(it) }?.let { 0 until words.size - it.size }
             ?: return null
-        var name = words.slice(range)
-        while (name.isNotEmpty() && name.first().lowercase() in NAME_ARTICLES) name = name.drop(1)
-        while (name.isNotEmpty() && name.last().lowercase() in NAME_TRAILERS) name = name.dropLast(1)
-        if (name.isEmpty() || name.size > MAX_APP_NAME_WORDS) return null
-        val key = name.joinToString(" ") { it.lowercase() }
+        var first = range.first
+        var last = range.last
+        while (first <= last && spoken[first] in NAME_ARTICLES) first++
+        while (first <= last && spoken[last] in NAME_TRAILERS) last--
+        if (first > last || last - first + 1 > MAX_APP_NAME_WORDS) return null
+        val key = spoken.slice(first..last).joinToString(" ")
         if (key !in APP_NAMES_WITH_INTENT_WORDS && key.split(' ').any { it in INTENT_WORDS }) return null
-        return FastCommand.OpenApp(name.joinToString(" "))
+        return FastCommand.OpenApp(words.slice(first..last).joinToString(" "))
     }
 
     private fun List<String>.startsWith(prefix: List<String>, at: Int = 0): Boolean =
@@ -86,29 +106,116 @@ object FastCommandRouter {
     private fun phrases(vararg values: String): List<List<String>> =
         values.map { it.split(' ') }.sortedByDescending { it.size }
 
+    private fun spokenForms(vararg forms: Pair<String, List<String>>): Map<String, String> =
+        forms.flatMap { (spoken, variants) -> variants.map { Normalizer.normalize(it, Normalizer.Form.NFC) to spoken } }.toMap()
+
     private val NON_WORD = Regex("[^\\p{L}\\p{M}\\p{N}]+")
     private val ZERO_WIDTH = Regex("[\\u200C\\u200D]")
     private const val MAX_APP_NAME_WORDS = 4
 
+    /**
+     * Other spellings of a word → the spoken form the phrase lists below use: Devanagari spellings
+     * (Flux writes English words in Devanagari when it hears Hindi), romanisation variants, and
+     * mis-hearings seen from Deepgram Flux on Indian-English Hinglish commands.
+     */
+    private val SPOKEN_FORMS: Map<String, String> = spokenForms(
+        // Hindi verbs and particles.
+        "karo" to listOf("caro", "carro", "kro", "करो"),
+        "kar" to listOf("कर"),
+        "do" to listOf("दो"),
+        "de" to listOf("दे"),
+        "kijiye" to listOf("kijie", "कीजिए", "कीजिये"),
+        "kariye" to listOf("करिए", "करिये"),
+        "dijiye" to listOf("dijie", "दीजिए", "दीजिये"),
+        "kholo" to listOf("colo", "kolo", "kohlo", "khollo", "holo", "खोलो"),
+        "khol" to listOf("खोल"),
+        "kholiye" to listOf("खोलिए", "खोलिये"),
+        "jalao" to listOf("jalaao", "jalau", "जलाओ", "जलाऊ"),
+        "jala" to listOf("जला"),
+        "jalado" to listOf("जलादो"),
+        "jalaiye" to listOf("जलाइए", "जलाइये"),
+        "chalao" to listOf("चलाओ"),
+        "chalu" to listOf("chaalu", "चालू"),
+        "band" to listOf("bandh", "बंद", "बन्द"),
+        "bujhao" to listOf("बुझाओ"),
+        "bujha" to listOf("बुझा"),
+        "jao" to listOf("जाओ"),
+        "par" to listOf("पर"),
+        "pe" to listOf("पे"),
+        "ko" to listOf("को"),
+        "ki" to listOf("की"),
+        "ka" to listOf("का"),
+        "wapas" to listOf("vapas", "वापस"),
+        "peeche" to listOf("piche", "पीछे"),
+        "aur" to listOf("और"),
+        "phir" to listOf("fir", "फिर"),
+        "tab" to listOf("तब"),
+        "baad" to listOf("बाद"),
+        "khojo" to listOf("खोजो"),
+        "dhundo" to listOf("dhoondo", "ढूंढो", "ढूँढो"),
+        "bhejo" to listOf("भेजो"),
+        "likho" to listOf("लिखो"),
+        // English command words written in Devanagari.
+        "and" to listOf("एंड"),
+        "then" to listOf("देन"),
+        "on" to listOf("ऑन", "ओन"),
+        "off" to listOf("ऑफ", "ऑफ़", "ओफ"),
+        "open" to listOf("ओपन"),
+        "turn" to listOf("टर्न"),
+        "switch" to listOf("स्विच"),
+        "launch" to listOf("लॉन्च"),
+        "start" to listOf("स्टार्ट"),
+        "the" to listOf("द", "दि"),
+        "torch" to listOf("टॉर्च", "टार्च", "टोर्च", "तोड़", "dodge"),
+        "flashlight" to listOf("फ्लैशलाइट", "फ़्लैशलाइट", "फ्लेशलाइट", "फ्लैशलाईट"),
+        "flash" to listOf("फ्लैश", "फ़्लैश"),
+        "light" to listOf("लाइट", "लाईट"),
+        "phone" to listOf("फोन", "फ़ोन"),
+        "app" to listOf("ऐप", "एप", "ऍप"),
+        "home" to listOf("होम"),
+        "screen" to listOf("स्क्रीन"),
+        "back" to listOf("बैक"),
+        "call" to listOf("कॉल"),
+        "message" to listOf("मैसेज"),
+        "search" to listOf("सर्च"),
+        // Politeness, greetings and the wake word.
+        "please" to listOf("pls", "plz", "प्लीज़", "प्लीज", "कृपया"),
+        "zara" to listOf("jara", "ज़रा", "जरा"),
+        "ab" to listOf("अब"),
+        "abhi" to listOf("अभी"),
+        "jaldi" to listOf("जल्दी"),
+        "na" to listOf("ना"),
+        "yaar" to listOf("yar", "यार"),
+        "ji" to listOf("जी"),
+        "bhai" to listOf("bhaiya", "भाई", "भैया"),
+        "hey" to listOf("हे", "हेय"),
+        "hi" to listOf("हाय"),
+        "ok" to listOf("okay", "ओके"),
+        "wakey" to listOf("वेकी", "वाकी", "वेकि", "वैकी"),
+    )
+
+    private val LONG_TORCH_NOUNS = listOf("flashlight", "torchlight")
+
+    /** "Wakey" as speech-to-text mishears it after the wake phrase: Becky, Vicky, Wiki, waking, … */
+    private val WAKE_NAME = Regex("[bvw][aeiouy]+(?:ck|kk|k|c|q)(?:ey|ie|ee|y|i|ing|in|en)")
+
     private val LEADING_FILLERS = phrases(
-        "hey wakey", "hi wakey", "ok wakey", "okay wakey", "wakey", "hey", "hi", "ok", "okay", "please", "pls",
-        "plz", "kindly", "can you", "could you", "would you", "will you", "now", "just", "zara", "jara",
-        "कृपया", "ज़रा", "जरा", "प्लीज़", "प्लीज", "अब",
+        "hey wakey", "hi wakey", "ok wakey", "wakey", "hey", "hi", "hello", "ok", "please", "kindly", "can you",
+        "could you", "would you", "will you", "now", "just", "zara", "ab", "yaar", "bhai", "ji",
     )
     private val TRAILING_FILLERS = phrases(
-        "please", "pls", "plz", "now", "right now", "for me", "na", "zara", "abhi", "jaldi", "प्लीज़", "प्लीज",
-        "कृपया", "ना", "अभी", "जल्दी",
+        "please", "now", "right now", "for me", "na", "zara", "abhi", "jaldi", "yaar", "ji", "bhai", "thanks",
+        "thank you", "ok",
     )
 
     /** A second clause means the request is not a single fast command. */
-    private val CONJUNCTIONS = setOf("and", "then", "also", "after", "aur", "phir", "fir", "और", "फिर", "तब", "बाद")
+    private val CONJUNCTIONS = setOf("and", "then", "also", "after", "or", "aur", "phir", "tab", "baad")
 
     /** Words that signal a task inside what would otherwise be an app name ("open YouTube play songs"). */
     private val INTENT_WORDS = setOf(
         "search", "find", "look", "send", "call", "dial", "message", "text", "type", "write", "play", "post",
         "share", "tell", "show", "set", "book", "order", "buy", "pay", "for", "to", "with", "about", "in", "from",
-        "a", "an", "khojo", "dhundo", "dhoondo", "bhejo", "likho", "chalao", "खोजो", "ढूंढो", "ढूँढो", "भेजो",
-        "लिखो", "कॉल", "मैसेज", "चलाओ",
+        "a", "an", "khojo", "dhundo", "bhejo", "likho", "chalao",
     )
     private val APP_NAMES_WITH_INTENT_WORDS = setOf("play store", "google play", "google play store", "play games")
 
@@ -116,36 +223,32 @@ object FastCommandRouter {
         "go home", "home", "home screen", "homescreen", "go to home", "go to home screen", "go to the home screen",
         "go to homescreen", "go to the homescreen", "take me home", "return home", "press home", "open home screen",
         "open the home screen", "show home screen", "show the home screen", "home jao", "home pe jao", "home par jao",
-        "home screen pe jao", "home screen par jao", "होम", "होम स्क्रीन", "होम जाओ", "होम पर जाओ", "होम स्क्रीन पर जाओ",
+        "home screen pe jao", "home screen par jao",
     )
     private val BACK_PHRASES = setOf(
-        "go back", "back", "press back", "navigate back", "go back once", "back jao", "wapas jao", "vapas jao",
-        "peeche jao", "piche jao", "वापस", "वापस जाओ", "पीछे", "पीछे जाओ", "बैक",
+        "go back", "back", "press back", "navigate back", "go back once", "back jao", "wapas jao", "peeche jao",
+        "wapas", "peeche",
     )
 
-    private val TORCH_NOUNS = phrases(
-        "flashlight", "flash light", "torch", "torchlight", "torch light", "flash", "टॉर्च", "टार्च", "फ्लैशलाइट",
-        "फ्लैश लाइट", "फ़्लैशलाइट", "फ्लैश",
-    )
-    private val TORCH_ARTICLES = setOf("the", "my", "phone", "ko", "को")
+    private val TORCH_NOUNS = phrases("flashlight", "flash light", "torch", "torchlight", "torch light", "flash")
+    private val TORCH_ARTICLES = setOf("the", "a", "my", "phone", "ko", "ki", "ka")
     private val TORCH_ON = setOf(
-        "on", "turn on", "switch on", "put on", "enable", "activate", "start", "open", "jalao", "jala do", "jala",
-        "jalado", "jalaiye", "jala dijiye", "on karo", "on kar do", "on kardo", "on kariye", "on kijiye",
-        "chalu karo", "chalu kar do", "chalu kardo", "chalu", "chalu kijiye", "start karo", "जलाओ", "जला दो",
-        "जलादो", "जलाइए", "जला दीजिए", "चालू करो", "चालू कर दो", "चालू कीजिए", "चालू", "ऑन करो", "ऑन कर दो",
-        "ऑन", "on करो", "on कर दो",
+        "on", "turn on", "switch on", "put on", "enable", "activate", "start", "open", "jalao", "jala do", "jala de",
+        "jala", "jalado", "jalaiye", "jala dijiye", "chalao", "chala do", "on karo", "on kar do", "on kar de",
+        "on kardo", "on kar", "on kariye", "on kijiye", "chalu karo", "chalu kar do", "chalu kar de", "chalu kardo",
+        "chalu", "chalu kijiye", "start karo",
     )
     private val TORCH_OFF = setOf(
-        "off", "turn off", "switch off", "disable", "deactivate", "stop", "close", "band karo", "band kar do",
-        "band kardo", "band", "band kijiye", "bujhao", "bujha do", "off karo", "off kar do", "off kardo",
-        "बंद करो", "बंद कर दो", "बंद", "बंद कीजिए", "बुझाओ", "बुझा दो", "ऑफ करो", "ऑफ कर दो", "ऑफ", "off करो",
+        "off", "turn off", "turn of", "switch off", "switch of", "disable", "deactivate", "stop", "close",
+        "band karo", "band kar do", "band kar de", "band kardo", "band kar", "band", "band kijiye", "ban karo",
+        "ban kar do", "bujhao", "bujha do", "bujha de", "off karo", "off kar do", "off kar de", "off kardo", "off kar",
     )
 
     private val OPEN_PREFIXES = phrases("open", "open up", "launch", "start")
     private val OPEN_SUFFIXES = phrases(
-        "kholo", "khol do", "khol", "kholiye", "khol dijiye", "open karo", "open kar do", "open kardo",
-        "खोलो", "खोल दो", "खोलिए", "खोल दीजिए", "ओपन करो", "ओपन कर दो", "open करो",
+        "kholo", "khol do", "khol de", "khol", "kholiye", "khol dijiye", "open karo", "open kar do", "open kar de",
+        "open kardo", "open kar",
     )
     private val NAME_ARTICLES = setOf("the", "my")
-    private val NAME_TRAILERS = setOf("app", "application", "ko", "को", "ऐप", "एप")
+    private val NAME_TRAILERS = setOf("app", "application", "ko")
 }

@@ -61,4 +61,30 @@ class PcmFramingTest {
         assertEquals(2L, timeline.pushedAt(0.15))
         assertEquals(3L, timeline.pushedAt(0.3))
     }
+
+    @Test
+    fun `speech ends at the last frame well above the quietest one`() {
+        val timeline = AudioTimeline(sampleRate = 16_000, capacity = 10)
+        assertNull(timeline.lastSpeechPushedAt())
+        listOf(30.0, 2_000.0, 150.0, 900.0, 110.0, 40.0).forEachIndexed { i, rms -> timeline.record(1280, pushedAt = i * 80L, rms = rms) }
+        // Floor 30 → threshold max(120, 100): the 150 frame counts, the 110 one does not.
+        assertEquals(240L, timeline.lastSpeechPushedAt())
+    }
+
+    @Test
+    fun `a loud room raises the speech threshold, and silence has no speech end`() {
+        val loud = AudioTimeline(sampleRate = 16_000, capacity = 10)
+        listOf(400.0, 5_000.0, 1_500.0, 420.0).forEachIndexed { i, rms -> loud.record(1280, pushedAt = i.toLong(), rms = rms) }
+        assertEquals(1L, loud.lastSpeechPushedAt())
+        val silent = AudioTimeline(sampleRate = 16_000, capacity = 10)
+        repeat(3) { silent.record(1280, pushedAt = it.toLong(), rms = 60.0) }
+        assertNull(silent.lastSpeechPushedAt())
+    }
+
+    @Test
+    fun `rms of little-endian PCM16`() {
+        assertEquals(0.0, pcmRms(ByteArray(0)), 0.0)
+        // Samples 3000 and -3000.
+        assertEquals(3_000.0, pcmRms(byteArrayOf(0xB8.toByte(), 0x0B, 0x48, 0xF4.toByte())), 1e-9)
+    }
 }

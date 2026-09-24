@@ -67,6 +67,55 @@ class AppMatcherTest {
     }
 
     @Test
+    fun devanagariAppNamesFromSpeech() {
+        assertEquals("com.instagram.android", matchPackage("इंस्टाग्राम"))
+        assertEquals("com.instagram.android", matchPackage("इंस्टा"))
+        assertEquals("com.android.chrome", matchPackage("क्रोम"))
+        assertEquals("com.android.settings", matchPackage("सेटिंग्स"))
+        assertEquals("com.whatsapp", matchPackage("व्हाट्सअप"))
+        assertEquals("com.google.android.youtube", matchPackage("यूटूब"))
+        assertEquals("com.sec.android.app.popupcalculator", matchPackage("केलकुलेटर"))
+        assertEquals("android.media.action.STILL_IMAGE_CAMERA", AppAliases.forName("कैमरा")?.fallbackAction)
+        assertEquals("Instagram", AppAliases.forName("इन्स्टाग्राम")?.label)
+    }
+
+    @Test
+    fun devanagariNamesMatchLatinLabelsBySpelling() {
+        val more = listOf(
+            LauncherApp("Telegram", "org.telegram.messenger", ".Main"),
+            LauncherApp("Snapchat", "com.snapchat.android", ".Main"),
+            LauncherApp("Flipkart", "com.flipkart.android", ".Main"),
+            LauncherApp("Netflix", "com.netflix.mediaclient", ".Main"),
+            LauncherApp("Spotify", "com.spotify.music", ".Main"),
+            LauncherApp("Zomato", "com.application.zomato", ".Main"),
+        )
+        fun match(name: String) = AppMatcher.match(name, apps + more)?.label
+        assertEquals("Telegram", match("टेलीग्राम"))
+        assertEquals("Snapchat", match("स्नैपचैट"))
+        assertEquals("Flipkart", match("फ्लिपकार्ट"))
+        assertEquals("Netflix", match("नेटफ्लिक्स"))
+        assertEquals("Spotify", match("स्पॉटिफाई"))
+        assertEquals("Zomato", match("ज़ोमैटो"))
+        assertEquals("Maps", match("मैप्स"))
+        assertNull(match("उबर"))
+    }
+
+    @Test
+    fun devanagariToLatin() {
+        assertEquals("instagram", Devanagari.toLatin("इंस्टाग्राम"))
+        assertEquals("teligram", Devanagari.toLatin("टेलीग्राम"))
+        assertEquals("snaipchait", Devanagari.toLatin("स्नैपचैट"))
+        assertEquals("flipkart", Devanagari.toLatin("फ्लिपकार्ट"))
+        assertEquals("kailkuletar", Devanagari.toLatin("कैलकुलेटर"))
+        assertEquals("zomaito", Devanagari.toLatin("ज़ोमैटो"))
+        assertEquals("gugal mais", Devanagari.toLatin("गूगल मैस"))
+        assertEquals("rang", Devanagari.toLatin("रंग"))
+        assertEquals("kampyutar", Devanagari.toLatin("कंप्यूटर"))
+        assertEquals("youtube kholo", Devanagari.toLatin("YouTube खोलो"))
+        assertNull(Devanagari.toLatin("Settings"))
+    }
+
+    @Test
     fun editDistance() {
         assertEquals(0, AppMatcher.editDistance("maps", "maps"))
         assertEquals(1, AppMatcher.editDistance("maps", "map"))

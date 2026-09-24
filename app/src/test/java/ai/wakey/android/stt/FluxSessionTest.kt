@@ -24,6 +24,14 @@ class FluxSessionTest {
             }
         }
 
+    /** Every connection attempt of an [openWithRetries] session: its listener and its own socket. */
+    private val attempts = mutableListOf<Pair<FluxSocket.Listener, FakeSocket>>()
+
+    private fun openWithRetries(): FluxSession =
+        FluxSession(CONFIG, calls, StandardTestDispatcher(scheduler)) { nowMs * 1_000_000 }.also { session ->
+            session.start { listener -> FakeSocket().also { attempts += listener to it } }
+        }
+
     private fun connected(): FluxSession = open().also {
         nowMs += 300
         server.onOpen()
@@ -279,6 +287,71 @@ class FluxSessionTest {
     }
 
     @Test
+    fun `a stalled connection gets one more attempt and the first to open is used`() {
+        val session = openWithRetries()
+        session.push(2, marker = 1)
+        settle()
+        scheduler.advanceTimeBy(FluxSession.CONNECT_RETRY_MS)
+        settle()
+        assertEquals(2, attempts.size)
+        scheduler.advanceTimeBy(FluxSession.CONNECT_RETRY_MS)
+        settle()
+        assertEquals("no third attempt", 2, attempts.size)
+
+        val (stalled, stalledSocket) = attempts[0]
+        val (retry, retrySocket) = attempts[1]
+        nowMs = 3_000
+        retry.onOpen()
+        settle()
+        assertEquals(listOf("connected 3000"), calls.log)
+        assertTrue(stalledSocket.cancelled)
+        assertEquals(listOf("pcm 2560 #1", "pcm 2560 #2"), retrySocket.frames)
+
+        // The dropped attempt's late events change nothing.
+        stalled.onOpen()
+        stalled.onText(turn("EndOfTurn", "Stale"))
+        stalled.onFailure(SttError(SttError.Kind.Network, "reset"))
+        retry.onText(turn("EndOfTurn", "Open YouTube"))
+        settle()
+        assertEquals(listOf("connected 3000", "final 'Open YouTube' [en]"), calls.log)
+        assertTrue(stalledSocket.frames.isEmpty())
+    }
+
+    @Test
+    fun `one failed attempt does not end the session while the other may still open`() {
+        openWithRetries()
+        scheduler.advanceTimeBy(FluxSession.CONNECT_RETRY_MS)
+        settle()
+        attempts[0].first.onFailure(SttError(SttError.Kind.Network, "Could not reach Deepgram: reset"))
+        settle()
+        assertEquals(emptyList<String>(), calls.log)
+        attempts[1].first.onFailure(SttError(SttError.Kind.Network, "Could not reach Deepgram: timeout"))
+        settle()
+        assertEquals(listOf("error Network: Could not reach Deepgram: timeout", "closed"), calls.log)
+    }
+
+    @Test
+    fun `a connection that fails before the retry fails the session at once`() {
+        openWithRetries()
+        attempts[0].first.onFailure(SttError(SttError.Kind.Auth, "Deepgram rejected the API key (HTTP 401)"))
+        settle()
+        assertEquals(listOf("error Auth: Deepgram rejected the API key (HTTP 401)", "closed"), calls.log)
+        scheduler.advanceTimeBy(FluxSession.CONNECT_RETRY_MS)
+        settle()
+        assertEquals(1, attempts.size)
+    }
+
+    @Test
+    fun `cancel drops every pending attempt`() {
+        val session = openWithRetries()
+        scheduler.advanceTimeBy(FluxSession.CONNECT_RETRY_MS)
+        settle()
+        session.cancel()
+        assertEquals(2, attempts.size)
+        assertTrue(attempts.all { it.second.cancelled })
+    }
+
+    @Test
     fun `the connect deadline does not apply once open`() {
         connected()
         scheduler.advanceTimeBy(FluxSession.CONNECT_TIMEOUT_MS * 2)
@@ -315,6 +388,23 @@ class FluxSessionTest {
         server.onText(turn("EndOfTurn", "Go back", lastWordEnd = 0.1))
         settle()
         assertEquals(420L, calls.transcriptionMs)
+    }
+
+    @Test
+    fun `transcription time runs from the end of the voice when Flux stretches the last word into silence`() {
+        val session = connected()
+        val roomTone = ShortArray(FRAME) { if (it % 2 == 0) 30 else -30 }
+        val speech = ShortArray(FRAME) { if (it % 2 == 0) 3_000 else -3_000 }
+        for (frame in 0 until 8) {
+            nowMs = 1_000 + 80L * frame
+            session.sendPcm(if (frame in 1..2) speech else roomTone) // speech in 0.08–0.24 s
+            settle()
+        }
+        nowMs = 1_900
+        // The last word "ends" at 0.6 s, inside the room tone pushed at 1 560 ms.
+        server.onText(turn("EndOfTurn", "Go back", lastWordEnd = 0.6))
+        settle()
+        assertEquals(1_900L - 1_160, calls.transcriptionMs)
     }
 
     private class FakeSocket : FluxSocket {
