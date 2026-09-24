@@ -1,5 +1,6 @@
 package ai.wakey.android.ui.components
 
+import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AssistantPhase
 import ai.wakey.android.core.AssistantUiState
 import ai.wakey.android.ui.theme.WakeyColors
@@ -131,7 +132,9 @@ private data class HeroCaption(val phase: AssistantPhase, val headline: String, 
 
 private fun heroCaption(state: AssistantUiState, wakePhrase: String): HeroCaption = when (state.phase) {
     AssistantPhase.Idle -> HeroCaption(state.phase, "Tap to talk", "Turn on “Listen for $wakePhrase” to talk hands-free")
-    AssistantPhase.WakeListening -> HeroCaption(state.phase, "Say “$wakePhrase”", "or tap the orb")
+    AssistantPhase.WakeListening ->
+        if (wakePhrase == WakeySettings.HEY) HeroCaption(state.phase, "Say “Hey” + your request", "like “Hey, open YouTube” · or tap the orb")
+        else HeroCaption(state.phase, "Say “$wakePhrase”", "or tap the orb")
     AssistantPhase.Hearing ->
         if (state.liveTranscript.isBlank()) HeroCaption(state.phase, "Listening…", "Tap the orb when you're done")
         else HeroCaption(state.phase, state.liveTranscript, null, isTranscript = true)

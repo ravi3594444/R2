@@ -6,6 +6,15 @@ enum class TtsEngine(val label: String) {
     Deepgram("Deepgram voice"),
 }
 
+/** How Wakey is woken hands-free. */
+enum class WakeMode(val label: String) {
+    /** Say "Hey" and the request in one go ("Hey, Instagram kholo"); Wakey acts only if a command follows. */
+    HeyCommand("“Hey” + command"),
+
+    /** Say the wake phrase ([WakeySettings.wakePhrase]), then the request. */
+    Phrase("Wake phrase"),
+}
+
 /** Speech-to-text language behaviour. [hints] are Deepgram Flux `language_hint` values. */
 enum class LanguageMode(val label: String, val hints: List<String>) {
     EnglishHindi("English + Hindi", listOf("en", "hi")),
@@ -16,6 +25,7 @@ enum class LanguageMode(val label: String, val hints: List<String>) {
 
 /** Non-secret user settings. API keys live in [SecretStore], never here. */
 data class WakeySettings(
+    val wakeMode: WakeMode = WakeMode.Phrase,
     val wakePhrase: String = DEFAULT_WAKE_PHRASE,
     /** 0 = fewest false wakes, 1 = most eager. Mapped to sherpa-onnx boost score / threshold. */
     val wakeSensitivity: Float = 0.5f,
@@ -37,8 +47,12 @@ data class WakeySettings(
     /** A short chime when the wake phrase is heard. */
     val wakeSound: Boolean = true,
 ) {
+    /** What the user says to wake Wakey, for captions and notifications: "Hey" or the wake phrase. */
+    val spokenWake: String get() = if (wakeMode == WakeMode.HeyCommand) HEY else wakePhrase
+
     companion object {
         const val DEFAULT_WAKE_PHRASE = "Hey Wakey"
+        const val HEY = "Hey"
         const val DEFAULT_DEEPGRAM_VOICE = "flux-meena-en"
         const val DEFAULT_STT_MODEL = "flux-general-multi"
         const val DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"

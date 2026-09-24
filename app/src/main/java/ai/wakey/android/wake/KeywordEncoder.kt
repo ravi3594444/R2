@@ -100,6 +100,21 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         .mapNotNull { words -> segment(words)?.takeIf { pieces -> pieces.all { it in validTokens } } }
         .distinct()
 
+    /**
+     * The keywords of [ai.wakey.android.config.WakeMode.HeyCommand]: "Hey Wakey" as usual, plus a
+     * check line for "hey" (also heard as "hay" or "he") followed by each of [HEY_COMMAND_WORDS]
+     * ("HEY OPEN", "HAY INSTAGRAM", "HE TORCH"…). "Hey" alone is too short and too common for the
+     * detector: on the desktop evaluation it caught at most 71% of clean "hey"s while firing 100+
+     * times an hour on ordinary speech. These lines caught 69% of clean "Hey, <command>" requests
+     * at 17 checks an hour of ordinary speech, and the transcript confirms each one.
+     */
+    fun encodeHey(): EncodedKeyword {
+        val wakey = encode(HEY_WAKEY)
+        val known = setOf(wakey.tokens) + wakey.variants
+        val commands = spell(HEY_SOUNDS.flatMap { hey -> HEY_COMMAND_WORDS.map { listOf(hey, it) } }).filter { it !in known }
+        return wakey.copy(checkVariants = (wakey.checkVariants + commands).distinct())
+    }
+
     private fun segment(words: List<String>): List<String>? =
         model.segment((if (model.addDummyPrefix) WORD_START else "") + words.joinToString(WORD_START))
 
@@ -109,6 +124,21 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         const val MAX_LENGTH = 40
         const val MIN_LETTERS = 5
         const val MIN_TOKENS = 3
+        const val HEY = "HEY"
+        private const val HEY_WAKEY = "Hey Wakey"
+
+        /** "Hey" as the model hears it, said quickly or with an Indian-English vowel. */
+        private val HEY_SOUNDS = listOf(HEY, "HAY", "HE")
+
+        /** Words that start most phone requests after "hey": verbs, apps and phone features. */
+        val HEY_COMMAND_WORDS = listOf(
+            "OPEN", "TURN", "PLAY", "CALL", "SEARCH", "SET", "SEND", "TAKE", "SHOW", "START", "FIND", "GO", "CLOSE",
+            "MESSAGE", "TEXT", "READ", "CHECK", "CAN", "PLEASE",
+            "INSTAGRAM", "YOUTUBE", "WHATSAPP", "TORCH", "FLASHLIGHT", "CAMERA", "SETTINGS", "CHROME", "GOOGLE",
+            "BLUETOOTH", "WIFI", "MUSIC", "CALCULATOR", "SPOTIFY", "GALLERY", "PHONE", "MAPS", "ALARM", "FACEBOOK",
+            "SNAPCHAT", "TELEGRAM", "GMAIL", "NETFLIX", "AMAZON", "FLIPKART", "PAYTM", "ZOMATO", "SWIGGY", "VOLUME",
+            "MUJHE", "MERA", "ZARA",
+        )
 
         private const val WORD_START = "▁"
         private val WHITESPACE = Regex("\\s+")

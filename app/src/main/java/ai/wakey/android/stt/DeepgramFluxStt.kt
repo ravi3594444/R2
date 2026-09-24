@@ -141,19 +141,22 @@ class DeepgramFluxStt internal constructor(
         val LISTEN_ENDPOINT = "https://api.deepgram.com/v2/listen".toHttpUrl()
 
         /**
-         * End-of-turn tuning for short spoken commands, measured on 22 Indian-English and Hinglish
-         * command clips (FluxCommandSetLiveTest, hints en+hi):
-         * - `eot_threshold` stays at Flux's default 0.7: speech end → final was 850 ms median, 1.5 s
-         *   worst. 0.65 and 0.6 saved about 200 ms but ended "YouTube kholo" after "YouTube": Hinglish
-         *   puts the verb last, so the noun alone already sounds finished. 0.8 added 330 ms and fixed
-         *   nothing.
-         * - `eot_timeout_ms` is 3000 rather than Flux's 5000, so that when the model is never
-         *   confident (mumbled or code-mixed speech) the turn still ends 3 s after the user goes quiet.
-         *   Every measured turn ended on the model's own confidence first, 1500 changed nothing.
-         * Eager end-of-turn stays off because nothing speculates on unfinished turns.
+         * End-of-turn tuning for spoken commands, measured on 54 Indian-English and Hinglish command
+         * clips with "Hey Wakey," in front (short, long, sped up, and with a 0.8–1.2 s pause
+         * mid-sentence), plus 30 noisy/far-field versions, streamed live:
+         * - `eot_threshold` 0.85 instead of 0.7: 0.7 ended 5 of 54 commands at a pause ("Set an
+         *   alarm." for "set an alarm for 6:30", "Settings main." for "Settings mein Bluetooth on
+         *   karo"), and the cut transcripts were also worse overall (command WER 29.6% → 20.0%,
+         *   key words right 77% → 84%). No cut-offs at 0.85. It costs ~0.5 s: speech end → final
+         *   1.28 s median (0.74 s before), 1.77 s p90.
+         * - `eot_timeout_ms` 1500: ends a turn 1.5 s after real silence even when the model is
+         *   unsure (mumbled or code-mixed speech).
+         * - In background chatter neither fires, so [FluxSession] ends a heard request by hand.
+         * Nova-3 (multi, en-IN, hi) was also measured: similar accuracy, but its silence endpointing
+         * cut commands at pauses. Eager end-of-turn stays off because nothing speculates on unfinished turns.
          */
-        const val EOT_THRESHOLD = "0.7"
-        const val EOT_TIMEOUT_MS = 3_000
+        const val EOT_THRESHOLD = "0.85"
+        const val EOT_TIMEOUT_MS = 1_500
 
         private const val TEST_MODEL = "flux-general-multi"
         private const val TEST_TIMEOUT_MS = 10_000L

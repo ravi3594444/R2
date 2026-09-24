@@ -61,7 +61,7 @@ internal interface FluxSocket {
  * the rest of the connection wait, which the user also experiences.
  */
 internal class FluxSession(
-    config: SttConfig,
+    private val config: SttConfig,
     private val listener: SttListener,
     dispatcher: CoroutineDispatcher,
     private val nanoTime: () -> Long,
@@ -110,6 +110,7 @@ internal class FluxSession(
     private var lastPushAt = 0L
     private var latest: FluxMessage.TurnInfo? = null
     private var lastPartial = ""
+    private var forcedEnd = false
     private var closeTimeout: Job? = null
     private var opened = NO_ATTEMPT
     private val failedAttempts = mutableSetOf<Int>()
@@ -307,11 +308,31 @@ internal class FluxSession(
             return
         }
         latest = info
+        if (shouldForceEnd(info)) {
+            forcedEnd = true
+            transport.sendText(FORCE_END_TURN)
+        }
         if (info.event == TurnEvent.StartOfTurn) notify { onSpeechStarted() }
         if (info.transcript.isNotBlank() && info.transcript != lastPartial) {
             lastPartial = info.transcript
             notify { onTranscript(info.transcript, isFinal = false, languages = info.languages) }
         }
+    }
+
+    /**
+     * In background chatter Flux's end-of-turn confidence can hover at 0.4–0.8 and `eot_timeout_ms`
+     * never fires (chatter is not silence), so a finished command could wait for a final that
+     * doesn't come. Once the request has been heard, its last word ended [FORCE_END_SILENCE_S] ago
+     * and Flux is at least somewhat confident, the turn is ended by hand. Measured on 54 clean and
+     * 30 noisy Indian-English/Hinglish command clips: noisy finals arrived ~1.9 s after speech
+     * (previously up to never), and no clean command was cut short.
+     */
+    private fun shouldForceEnd(info: FluxMessage.TurnInfo): Boolean {
+        if (forcedEnd || phase != Phase.Streaming || endRequest != null) return false
+        val window = info.audioWindowEnd ?: return false
+        val lastWord = info.lastWordEnd ?: return false
+        val confidence = info.endOfTurnConfidence ?: return false
+        return window - lastWord >= FORCE_END_SILENCE_S && confidence >= FORCE_END_MIN_CONFIDENCE && config.hasRequest(info.transcript)
     }
 
     private fun onSocketClosed(event: Event.Closed) {
@@ -377,6 +398,9 @@ internal class FluxSession(
     }
 
     internal companion object {
+        /** Quiet after the last word, in seconds of audio, before a heard request is ended by hand. */
+        const val FORCE_END_SILENCE_S = 1.5
+        const val FORCE_END_MIN_CONFIDENCE = 0.3
         const val CHUNK_MS = 80
 
         /**

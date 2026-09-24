@@ -35,7 +35,7 @@ class DeepgramFluxSttTest {
         val url = fluxListenUrl(DeepgramFluxStt.LISTEN_ENDPOINT, config)
         assertEquals(
             "https://api.deepgram.com/v2/listen?model=flux-general-multi&encoding=linear16&sample_rate=16000" +
-                "&eot_threshold=0.7&eot_timeout_ms=3000&language_hint=en&language_hint=hi" +
+                "&eot_threshold=0.85&eot_timeout_ms=1500&language_hint=en&language_hint=hi" +
                 "&keyterm=Wakey&keyterm=Hey%20Wakey&keyterm=R%26D%2B",
             url.toString(),
         )
@@ -48,7 +48,7 @@ class DeepgramFluxSttTest {
         val url = fluxListenUrl(DeepgramFluxStt.LISTEN_ENDPOINT, config, FluxTurnTuning(eotThreshold = "0.65", eotTimeoutMs = 1_500))
         assertEquals("0.65", url.queryParameter("eot_threshold"))
         assertEquals("1500", url.queryParameter("eot_timeout_ms"))
-        assertEquals(FluxTurnTuning("0.7", 3_000), FluxTurnTuning())
+        assertEquals(FluxTurnTuning("0.85", 1_500), FluxTurnTuning())
     }
 
     @Test

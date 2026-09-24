@@ -16,8 +16,8 @@ class FluxSessionTest {
     private lateinit var server: FluxSocket.Listener
     private var nowMs = 0L
 
-    private fun open(): FluxSession =
-        FluxSession(CONFIG, calls, StandardTestDispatcher(scheduler)) { nowMs * 1_000_000 }.also { session ->
+    private fun open(config: SttConfig = CONFIG): FluxSession =
+        FluxSession(config, calls, StandardTestDispatcher(scheduler)) { nowMs * 1_000_000 }.also { session ->
             session.start { listener ->
                 server = listener
                 socket
@@ -32,7 +32,7 @@ class FluxSessionTest {
             session.start { listener -> FakeSocket().also { attempts += listener to it } }
         }
 
-    private fun connected(): FluxSession = open().also {
+    private fun connected(config: SttConfig = CONFIG): FluxSession = open(config).also {
         nowMs += 300
         server.onOpen()
         settle()
@@ -100,6 +100,31 @@ class FluxSessionTest {
         settle()
         assertEquals("closed", calls.log.last())
         assertEquals(1, calls.log.count { it == "closed" })
+    }
+
+    @Test
+    fun `a heard request is ended by hand when chatter keeps the turn open`() {
+        connected()
+        server.onText(turn("StartOfTurn", "Hey Wakey"))
+        server.onText(turn("Update", "Hey Wakey open YouTube", lastWordEnd = 2.0, window = 3.0))
+        settle()
+        assertEquals("1 s after the last word is too soon", emptyList<String>(), socket.texts)
+        server.onText(turn("Update", "Hey Wakey open YouTube", lastWordEnd = 2.0, window = 3.6, eot = 0.4))
+        server.onText(turn("Update", "Hey Wakey open YouTube", lastWordEnd = 2.0, window = 3.9, eot = 0.45))
+        settle()
+        assertEquals(listOf(FORCE_END_TURN), socket.texts)
+        server.onText(turn("EndOfTurn", "Hey Wakey open YouTube"))
+        settle()
+        assertEquals("final 'Hey Wakey open YouTube' [en]", calls.log.last())
+    }
+
+    @Test
+    fun `the wake phrase alone or an unsure model does not end the turn`() {
+        connected(CONFIG.copy(hasRequest = { it.removePrefix("Hey Wakey").isNotBlank() }))
+        server.onText(turn("Update", "Hey Wakey", lastWordEnd = 1.0, window = 3.0, eot = 0.6))
+        server.onText(turn("Update", "Hey Wakey open", lastWordEnd = 1.5, window = 3.5, eot = 0.2))
+        settle()
+        assertEquals(emptyList<String>(), socket.texts)
     }
 
     @Test
@@ -461,11 +486,18 @@ class FluxSessionTest {
         val CONFIG = SttConfig(model = "flux-general-multi", languageHints = listOf("en", "hi"))
         const val FRAME = 1280
 
-        fun turn(event: String, transcript: String, lastWordEnd: Double? = null, languages: List<String> = listOf("en")): String {
+        fun turn(
+            event: String,
+            transcript: String,
+            lastWordEnd: Double? = null,
+            languages: List<String> = listOf("en"),
+            window: Double = 1.0,
+            eot: Double = 0.5,
+        ): String {
             val words = lastWordEnd?.let { """[{"word":"w","confidence":0.9,"start":0.0,"end":$it}]""" } ?: "[]"
             val langs = languages.joinToString(",") { "\"$it\"" }
-            return """{"type":"TurnInfo","event":"$event","turn_index":0,"audio_window_start":0.0,"audio_window_end":1.0,""" +
-                """"transcript":"$transcript","words":$words,"languages":[$langs],"end_of_turn_confidence":0.5,"sequence_id":1}"""
+            return """{"type":"TurnInfo","event":"$event","turn_index":0,"audio_window_start":0.0,"audio_window_end":$window,""" +
+                """"transcript":"$transcript","words":$words,"languages":[$langs],"end_of_turn_confidence":$eot,"sequence_id":1}"""
         }
     }
 }

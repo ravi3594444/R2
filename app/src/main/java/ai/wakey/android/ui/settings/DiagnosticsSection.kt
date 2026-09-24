@@ -71,7 +71,7 @@ fun DiagnosticsSection(controller: AssistantController, state: AssistantUiState,
             Spacer(Modifier.width(8.dp))
             Text(if (copied) "Report copied" else "Copy report")
         }
-        NoteText("If “Hey Wakey” doesn't respond, copy the report and paste it in your message. It contains no keys or audio.")
+        NoteText("If the wake word doesn't respond, copy the report and paste it in your message. It contains no keys or audio.")
         OutlinedButton(onClick = controller::clearConversation, enabled = state.entries.isNotEmpty()) {
             Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))

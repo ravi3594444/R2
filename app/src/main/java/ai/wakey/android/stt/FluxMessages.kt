@@ -26,6 +26,10 @@ internal sealed interface FluxMessage {
         val languages: List<String>,
         /** End of the last word, in seconds of audio since the stream started; null without timings. */
         val lastWordEnd: Double?,
+        /** Seconds of audio Flux has processed so far; null if absent. */
+        val audioWindowEnd: Double? = null,
+        /** Flux's confidence that the turn has ended, 0..1; null if absent. */
+        val endOfTurnConfidence: Double? = null,
     ) : FluxMessage
 
     /** Flux's `Error` message; the server closes the connection after it. */
@@ -58,7 +62,11 @@ internal sealed interface FluxMessage {
                 (0 until array.length()).mapNotNull { i -> array.takeUnless { it.isNull(i) }?.optString(i) }
                     .filter { it.isNotBlank() }
             }.orEmpty()
-            return TurnInfo(event, stringOrEmpty("transcript"), languages, lastWordEnd)
+            return TurnInfo(
+                event, stringOrEmpty("transcript"), languages, lastWordEnd,
+                audioWindowEnd = optDouble("audio_window_end").takeIf { it.isFinite() },
+                endOfTurnConfidence = optDouble("end_of_turn_confidence").takeIf { it.isFinite() },
+            )
         }
 
         private fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJSONObject(it) }

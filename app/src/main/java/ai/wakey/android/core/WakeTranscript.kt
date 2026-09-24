@@ -1,5 +1,7 @@
 package ai.wakey.android.core
 
+import ai.wakey.android.agent.FastCommandRouter
+
 /**
  * The wake phrase inside a Deepgram transcript. The audio sent to Deepgram starts just before the
  * wake phrase, so a transcript usually opens with it ("Hey Wakey, turn on the torch"), often
@@ -47,6 +49,32 @@ internal object WakeTranscript {
         }
     }
 
+    /**
+     * Confirms a "hey" detection in [ai.wakey.android.config.WakeMode.HeyCommand]: the transcript
+     * must open with "hey" and go on with something addressed to a phone: a direct command Wakey
+     * knows ("hey torch jalao"), an action verb up front ("hey, open Instagram", "hey can you call
+     * Mom") or a Hindi action verb anywhere ("hey Instagram kholo"). "Hey Wakey …" always counts.
+     * Everyday "hey, how are you" does not. Undecided until a command shows or the turn ends.
+     */
+    fun checkHeyCommand(text: String, isFinal: Boolean): Verdict {
+        val words = text.split(WORD_BREAK).map(::norm).filter { it.isNotEmpty() }
+        val heyAt = words.take(2).indexOfFirst { it in HEY_WORDS }
+        if (heyAt < 0) return if (words.isEmpty() && !isFinal) Verdict.Undecided else Verdict.NotHeard
+        var rest = words.drop(heyAt + 1)
+        if (rest.firstOrNull()?.let { closeTo("wakey", it) } == true) return Verdict.Heard
+        while (rest.isNotEmpty() && rest.first() in POLITE_WORDS) rest = rest.drop(1)
+        val command = rest.isNotEmpty() && (
+            rest.first() in ACTION_VERBS ||
+                rest.any { word -> HINDI_VERBS.any { word.startsWith(it) } || DEVANAGARI_VERBS.any { word.startsWith(it) } } ||
+                FastCommandRouter.route(rest.joinToString(" ")) != null
+            )
+        return when {
+            command -> Verdict.Heard
+            isFinal -> Verdict.NotHeard
+            else -> Verdict.Undecided
+        }
+    }
+
     private fun wakeWords(phrase: String) = phrase.lowercase().split(' ').filter { it.isNotEmpty() }
 
     private fun norm(w: String) = w.lowercase().trim(',', '.', '!', '?', '।', ':', ';', '"', '\'')
@@ -82,10 +110,35 @@ internal object WakeTranscript {
         return dp[b.length]
     }
 
+    private val HEY_WORDS = setOf("hey", "hay", "hei", "he", "heyy", "हे", "हेय")
+
+    /** Skipped between "hey" and the command: "hey, please open…", "hey can you open…". */
+    private val POLITE_WORDS = setOf(
+        "please", "pls", "can", "could", "would", "will", "you", "u", "kindly", "zara", "jara", "just", "quickly",
+        // Habit from other assistants: "hey Google, Instagram kholo".
+        "google",
+    )
+
+    private val ACTION_VERBS = setOf(
+        "open", "launch", "start", "close", "search", "find", "look", "play", "pause", "resume", "call", "dial",
+        "message", "text", "send", "reply", "turn", "switch", "set", "show", "take", "go", "navigate", "scroll",
+        "tap", "click", "press", "read", "mute", "unmute", "increase", "decrease", "raise", "lower", "enable",
+        "disable", "check", "book", "order", "share", "save", "delete", "record", "capture", "add", "remove",
+        "install", "download", "create", "write", "type", "make", "remind", "lock", "unlock", "connect", "disconnect",
+        "flashlight", "torch", "bluetooth", "wifi", "volume",
+    )
+
+    /** Hinglish action verbs, matched as word prefixes (kholo, kholiye, kholna…). */
+    private val HINDI_VERBS = listOf(
+        "khol", "karo", "kariye", "kardo", "chala", "dikha", "band", "bajao", "baja", "lagao", "laga",
+        "jalao", "jala", "bujhao", "bujha", "bhejo", "bhej", "dhundo", "dhoondo", "dhundh", "likho", "sunao", "badhao", "ghatao",
+    )
+    private val DEVANAGARI_VERBS = listOf("खोल", "करो", "करिए", "चला", "दिखा", "बंद", "बजा", "लगा", "जला", "बुझा", "भेज", "ढूंढ", "लिख", "सुना")
+
     private val WHITESPACE = Regex("\\s+")
     private val WORD_BREAK = Regex("[\\s-]+")
-    private val MISHEARD_WAKEY = Regex("[bvwr][aeiouy]+(?:ck|kk|k|c|q)(?:ey|ie|ee|y|i|ing|in|en)")
+    private val MISHEARD_WAKEY = Regex("[bvwr][aeiouy]+(?:ck|kk|k|c|q|gg|g)(?:ey|ie|ee|y|i|ing|in|en)")
 
-    /** वेकी, वाकी, बेकी, विकी, रिकी…: व/ब/र, a vowel sign, क, a vowel sign. */
-    private val DEVANAGARI_WAKEY = Regex("[वबर]\\p{M}*क\\p{M}*(?:[कय]\\p{M}*)?")
+    /** वेकी, वाकी, बेकी, विकी, रिकी, वेगी…: व/ब/र, a vowel sign, क or ग, a vowel sign. */
+    private val DEVANAGARI_WAKEY = Regex("[वबर]\\p{M}*[कग]\\p{M}*(?:[कगय]\\p{M}*)?")
 }

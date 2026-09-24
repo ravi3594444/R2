@@ -144,11 +144,11 @@ fun ScreenControlSetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
 fun AssistantSetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
     SetupItem(
         icon = Icons.Rounded.KeyboardVoice,
-        title = "Background listening for \u201cHey Wakey\u201d",
+        title = "Background listening",
         done = setup.status.defaultAssistant,
         doneLabel = "On",
         todoLabel = "Off",
-        description = "So \u201cHey Wakey\u201d keeps working when the app is closed, the screen is off or the phone restarts. " +
+        description = "So the wake word keeps working when the app is closed, the screen is off or the phone restarts. " +
             "Android allows background listening only for the phone's digital assistant app, so set Wakey as it.",
         modifier = modifier,
         details = {
@@ -158,7 +158,7 @@ fun AssistantSetupItem(setup: WakeySetup, modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
-                NoteText("Nothing else changes: you still just say \u201cHey Wakey\u201d. (Holding the power button will also open Wakey instead of Google.)")
+                NoteText("Nothing else changes: you still just say the wake word. (Holding the power button will also open Wakey instead of Google.)")
             }
         },
     ) {
