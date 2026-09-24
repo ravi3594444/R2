@@ -103,7 +103,7 @@ fun TtsEngineSelector(selected: TtsEngine, onSelect: (TtsEngine) -> Unit, modifi
 
 /** The chosen segment filled white, the others outlined. */
 @Composable
-private fun monoSegmentColors(): SegmentedButtonColors = SegmentedButtonDefaults.colors(
+internal fun monoSegmentColors(): SegmentedButtonColors = SegmentedButtonDefaults.colors(
     activeContainerColor = MaterialTheme.colorScheme.primary,
     activeContentColor = MaterialTheme.colorScheme.onPrimary,
     activeBorderColor = MaterialTheme.colorScheme.primary,

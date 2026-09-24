@@ -164,7 +164,7 @@ internal fun WakeyDashboard(
                 StatusBanner(state.statusMessage, state.statusIsError, onDismiss = actions.dismissStatus)
                 AssistantHero(
                     state = state,
-                    wakePhrase = settings.wakePhrase,
+                    wakePhrase = settings.spokenWake,
                     micLevel = micLevel,
                     orbSize = orbSize,
                     onOrbTap = actions.talk,
@@ -270,7 +270,7 @@ private fun QuickControlsCard(
     ) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SwitchRow(
-                title = "Listen for “${settings.wakePhrase}”",
+                title = "Listen for “${settings.spokenWake}”",
                 checked = wakeRunning,
                 onCheckedChange = onWakeListeningChange,
             )

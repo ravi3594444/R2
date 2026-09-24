@@ -74,11 +74,14 @@ class AudioEngine(private val context: Context) {
     private var detector: SherpaWakeWordDetector? = null
     private var capture: Capture? = null
 
-    /** Starts capture + detection. Throws [IllegalStateException] with a readable message on failure. */
+    /**
+     * Starts capture + detection of [phrase], or of the word "hey" when [hey] is set (every detection
+     * then needs a check). Throws [IllegalStateException] with a readable message on failure.
+     */
     @Synchronized
-    fun startWakeListening(phrase: String, sensitivity: Float, onWake: (WakeEvent) -> Unit) {
+    fun startWakeListening(phrase: String, sensitivity: Float, hey: Boolean, onWake: (WakeEvent) -> Unit) {
         val keyword = try {
-            encoder().encode(phrase)
+            keywordFor(phrase, hey)
         } catch (e: KeywordEncodingException) {
             throw IllegalStateException(e.message, e)
         }
@@ -93,10 +96,12 @@ class AudioEngine(private val context: Context) {
      * @throws KeywordEncodingException if the phrase can't be used.
      */
     @Synchronized
-    fun updateWakePhrase(phrase: String, sensitivity: Float) {
+    fun updateWakePhrase(phrase: String, sensitivity: Float, hey: Boolean) {
         if (!_wakeListening.value) return
-        router.updateKeyword(encoder().encode(phrase), sensitivity)
+        router.updateKeyword(keywordFor(phrase, hey), sensitivity)
     }
+
+    private fun keywordFor(phrase: String, hey: Boolean) = if (hey) encoder().encodeHey() else encoder().encode(phrase)
 
     @Synchronized
     fun stopWakeListening() {

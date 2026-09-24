@@ -71,6 +71,20 @@ class KeywordEncoderTest {
     }
 
     @Test
+    fun `hey mode spots hey wakey and checks hey plus a command word`() {
+        val keyword = encoder.encode("Hey Wakey")
+        val hey = encoder.encodeHey()
+        assertEquals(keyword.tokens, hey.tokens)
+        assertEquals(keyword.variants, hey.variants)
+        val checks = hey.checkVariants.map { it.joinToString(" ") }
+        // spm.encode("HEY OPEN"), spm.encode("HEY INSTAGRAM"), spm.encode("HEY TORCH")
+        assertTrue(checks.containsAll(listOf("▁HE Y ▁O P EN", "▁HE Y ▁IN S TA G RA M", "▁HE Y ▁TO R CH", "▁HE Y ▁W I K Y")))
+        assertTrue(checks.size >= KeywordEncoder.HEY_COMMAND_WORDS.size)
+        assertEquals(checks, checks.distinct())
+        assertTrue(hey.checkVariants.none { it == hey.tokens || it in hey.variants })
+    }
+
+    @Test
     fun `variant tokens match python sentencepiece for the respelled phrase`() {
         // spm.encode("HEY BUDDEY") etc.; the phrase and its tag stay the user's.
         val keyword = encoder.encode("hey buddy")

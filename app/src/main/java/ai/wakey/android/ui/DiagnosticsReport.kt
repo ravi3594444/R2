@@ -48,7 +48,7 @@ internal fun diagnosticsReport(
         appendLine("Microphone permission: ${yes(setup.microphone)}; notifications: ${yes(setup.notifications)}; screen control: ${yes(setup.screenControl)}")
         appendLine("Listen for wake word switch: ${if (settings.wakeListeningWanted) "on" else "off"}; service running: ${yes(state.wakeServiceRunning)}")
         appendLine("Microphone now: $mic")
-        appendLine("Wake phrase: “${settings.wakePhrase}”, sensitivity %.2f, wake sound ${if (settings.wakeSound) "on" else "off"}".format(Locale.US, settings.wakeSensitivity))
+        appendLine("Wake: ${settings.wakeMode.label}, phrase “${settings.wakePhrase}”, sensitivity %.2f, wake sound ${if (settings.wakeSound) "on" else "off"}".format(Locale.US, settings.wakeSensitivity))
         appendLine("Since Wakey started: ${stats.wakes} wakes, ${stats.checksConfirmed} confirmed checks, ${stats.checksRejected} dropped checks, mic muted ${stats.mutedEvents} times")
         stats.lastRejectedHeard?.let { appendLine("Last dropped check heard: “$it”") }
         appendLine("Phase: ${state.phase.label}")

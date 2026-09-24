@@ -14,6 +14,7 @@ import ai.wakey.android.config.SecretKind
 import ai.wakey.android.config.SecretStore
 import ai.wakey.android.config.SettingsRepository
 import ai.wakey.android.config.TtsEngine
+import ai.wakey.android.config.WakeMode
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.llm.ChatModel
 import ai.wakey.android.llm.DecisionModel
@@ -105,11 +106,11 @@ class AssistantController(
     init {
         scope.launch { audio.level.collect { level -> _state.update { it.copy(micLevel = level) } } }
         scope.launch {
-            settingsRepo.settings.map { it.wakePhrase to it.wakeSensitivity }.distinctUntilChanged().drop(1)
-                .collect { (phrase, sensitivity) ->
+            settingsRepo.settings.map { Triple(it.wakeMode, it.wakePhrase, it.wakeSensitivity) }.distinctUntilChanged().drop(1)
+                .collect { (mode, phrase, sensitivity) ->
                     if (_state.value.wakeServiceRunning) {
-                        runCatching { audio.updateWakePhrase(phrase, sensitivity) }
-                            .onSuccess { setStatus("Now listening for “$phrase”.") }
+                        runCatching { audio.updateWakePhrase(phrase, sensitivity, hey = mode == WakeMode.HeyCommand) }
+                            .onSuccess { setStatus("Now listening for “${settingsRepo.current.spokenWake}”.") }
                             .onFailure { setStatus("Wake phrase not applied: ${it.message}", error = true) }
                     }
                 }
@@ -167,14 +168,17 @@ class AssistantController(
     fun onWakeServiceStarted(): Boolean {
         val s = settingsRepo.current
         return try {
-            audio.startWakeListening(s.wakePhrase, s.wakeSensitivity, ::onWakeDetected)
+            audio.startWakeListening(s.wakePhrase, s.wakeSensitivity, hey = s.wakeMode == WakeMode.HeyCommand, onWake = ::onWakeDetected)
             _state.update {
                 it.copy(
                     wakeServiceRunning = true,
                     phase = if (it.phase == AssistantPhase.Idle) AssistantPhase.WakeListening else it.phase,
                 )
             }
-            setStatus("Say “${s.wakePhrase}” followed by your request.")
+            setStatus(
+                if (s.wakeMode == WakeMode.HeyCommand) "Say “Hey” and your request, like “Hey, open YouTube”."
+                else "Say “${s.wakePhrase}” followed by your request.",
+            )
             true
         } catch (e: Exception) {
             setStatus("Could not start wake listening: ${e.message}", error = true)
@@ -227,6 +231,9 @@ class AssistantController(
             startListening(InputSource.WakeWord, event)
         }
     }
+
+    /** A command after "hey" can take a while to reach its verb ("hey Instagram pe cats search karo"). */
+    private fun checkTimeoutMs() = if (settingsRepo.current.wakeMode == WakeMode.HeyCommand) HEY_CHECK_TIMEOUT_MS else CHECK_TIMEOUT_MS
 
     private fun playWakeSound() {
         if (settingsRepo.current.wakeSound) chime.play()
@@ -347,7 +354,9 @@ class AssistantController(
                 post(token) {
                     clock.lastEventAt = SystemClock.elapsedRealtime()
                     if (checkToken == token) {
-                        when (WakeTranscript.check(text, s.wakePhrase, isFinal)) {
+                        val verdict = if (s.wakeMode == WakeMode.HeyCommand) WakeTranscript.checkHeyCommand(text, isFinal)
+                        else WakeTranscript.check(text, s.wakePhrase, isFinal)
+                        when (verdict) {
                             WakeTranscript.Verdict.Undecided -> return@post
                             WakeTranscript.Verdict.NotHeard -> {
                                 rejectCheck(text)
@@ -356,7 +365,7 @@ class AssistantController(
                             WakeTranscript.Verdict.Heard -> confirmCheck()
                         }
                     }
-                    val cleaned = stripWakePhrase(text, s.wakePhrase)
+                    val cleaned = stripWakePhrase(text, if (s.wakeMode == WakeMode.HeyCommand) HEY_STRIP else s.wakePhrase)
                     if (!isFinal) {
                         if (cleaned.isNotBlank()) clock.speechStarted = true
                         _state.update { it.copy(liveTranscript = cleaned) }
@@ -391,7 +400,14 @@ class AssistantController(
             }
         }
         val newSession = try {
-            stt.open(SttConfig(model = s.sttModel, languageHints = s.languageMode.hints, keyterms = keyterms(s)), listener)
+            val stripPhrase = if (s.wakeMode == WakeMode.HeyCommand) HEY_STRIP else s.wakePhrase
+            val config = SttConfig(
+                model = s.sttModel,
+                languageHints = s.languageMode.hints,
+                keyterms = keyterms(s),
+                hasRequest = { partial -> stripWakePhrase(partial, stripPhrase).isNotBlank() },
+            )
+            stt.open(config, listener)
         } catch (e: Exception) {
             checkToken = NO_CHECK
             audio.stopCommandStream()
@@ -423,7 +439,7 @@ class AssistantController(
             if (session !== watched) return
             val now = SystemClock.elapsedRealtime()
             when {
-                checkToken == sessionToken -> if (now - clock.startedAt > CHECK_TIMEOUT_MS) {
+                checkToken == sessionToken -> if (now - clock.startedAt > checkTimeoutMs()) {
                     rejectCheck("")
                     return
                 }
@@ -816,6 +832,10 @@ class AssistantController(
         private const val NO_SPEECH_TIMEOUT_MS = 7_000L
         /** An unsure wake detection must be confirmed by a transcript within this long of it. */
         private const val CHECK_TIMEOUT_MS = 5_000L
+        private const val HEY_CHECK_TIMEOUT_MS = 7_000L
+
+        /** Stripped from "hey" requests; people used to the old phrase may still say "Hey Wakey". */
+        private const val HEY_STRIP = "Hey Wakey"
         private const val NO_CHECK = -1L
         private const val MAX_HEARD_CHARS = 80
         internal const val MIC_MUTED_MESSAGE =

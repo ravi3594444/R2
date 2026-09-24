@@ -52,6 +52,36 @@ class WakeTranscriptTest {
         assertEquals(Verdict.NotHeard, check("hello there how are you", phrase = "Hello Computer"))
     }
 
+    private fun hey(text: String, isFinal: Boolean = false) = WakeTranscript.checkHeyCommand(text, isFinal)
+
+    @Test
+    fun `hey followed by a command wakes Wakey`() {
+        for (text in listOf(
+            "Hey, open Instagram", "hey Instagram kholo", "Hey torch jalao.", "hey can you open Chrome",
+            "Hey Google, Instagram kholo", "Hey Wakey", "Hey wiki open YouTube", "hey flashlight on",
+            "हे इंस्टाग्राम खोलो", "hey YouTube pe lo-fi chalao", "Hey, please turn on the torch", "Hay, open camera",
+        )) {
+            assertEquals(text, Verdict.Heard, hey(text))
+        }
+    }
+
+    @Test
+    fun `hey in everyday speech is dropped at the end of the turn`() {
+        for (text in listOf("hey how are you", "Hey Rahul, come here", "hey", "they are coming", "okay hey what")) {
+            assertEquals(text, Verdict.NotHeard, hey(text, isFinal = true))
+        }
+        // Without "hey" up front it is dropped as soon as words arrive.
+        assertEquals(Verdict.NotHeard, hey("they are coming"))
+    }
+
+    @Test
+    fun `hey waits while the command may still come`() {
+        assertEquals(Verdict.Undecided, hey(""))
+        assertEquals(Verdict.Undecided, hey("Hey"))
+        assertEquals(Verdict.Undecided, hey("hey Instagram"))
+        assertEquals(Verdict.Undecided, hey("hey how are"))
+    }
+
     @Test
     fun `strip still removes misheard wake phrases`() {
         assertEquals("open camera", WakeTranscript.strip("Hey Ricky, open camera", "Hey Wakey"))

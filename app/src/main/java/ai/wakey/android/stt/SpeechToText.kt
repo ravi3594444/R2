@@ -17,6 +17,11 @@ data class SttConfig(
     val sampleRate: Int = 16_000,
     /** Words to bias recognition toward (app names, the wake phrase). */
     val keyterms: List<String> = emptyList(),
+    /**
+     * Whether a partial transcript already holds a request (not just the wake phrase). Lets the
+     * session end a turn that the provider won't end by itself, e.g. in background chatter.
+     */
+    val hasRequest: (String) -> Boolean = { it.isNotBlank() },
 )
 
 interface SttSession {
