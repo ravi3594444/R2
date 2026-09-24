@@ -28,7 +28,7 @@ class SettleTracker(private val clock: () -> Long) {
     }
 
     companion object {
-        const val MIN_WAIT_MS = 200L
-        const val QUIET_MS = 250L
+        const val MIN_WAIT_MS = 150L
+        const val QUIET_MS = 200L
     }
 }

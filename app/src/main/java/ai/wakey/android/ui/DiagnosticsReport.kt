@@ -53,7 +53,18 @@ internal fun diagnosticsReport(
         stats.lastRejectedHeard?.let { appendLine("Last dropped check heard: “$it”") }
         appendLine("Phase: ${state.phase.label}")
         state.statusMessage?.let { appendLine("Status: $it") }
-        state.lastTimings?.let { t -> appendLine("Last request: " + timingDetails(t).joinToString("; ") { (k, v) -> "$k $v" }) }
+        state.lastTimings?.let { t ->
+            appendLine("Last request: " + timingDetails(t).joinToString("; ") { (k, v) -> "$k $v" })
+            if (t.timeline.isNotEmpty()) {
+                appendLine("Agent steps (who decided, thinking, doing):")
+                t.timeline.forEachIndexed { i, step ->
+                    appendLine(
+                        "  ${i + 1}. ${step.decidedBy.label} ${formatDuration(step.thinkMs)} → ${step.action}" +
+                            (if (step.actMs > 0) " ${formatDuration(step.actMs)}" else "") + if (step.success) "" else " FAILED",
+                    )
+                }
+            }
+        }
     }.trimEnd()
 }
 

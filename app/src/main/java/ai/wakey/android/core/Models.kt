@@ -39,6 +39,8 @@ data class TurnTimings(
     val llmCalls: Int = 0,
     /** Steps decided by the fast decision model (Jev). */
     val decisionCalls: Int = 0,
+    /** The agent run step by step (who decided, thinking and acting time). */
+    val timeline: List<ai.wakey.android.agent.StepTiming> = emptyList(),
     val promptTokens: Int = 0,
     val completionTokens: Int = 0,
 )

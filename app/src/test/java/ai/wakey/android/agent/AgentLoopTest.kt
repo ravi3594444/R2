@@ -50,6 +50,16 @@ class AgentLoopTest {
         assertEquals(5_000L, result.firstActionAtMs)
         assertEquals(listOf("Settings"), apps.opened)
         assertEquals(listOf("tap Bluetooth"), screen.log)
+        assertEquals(
+            listOf(
+                Triple(Decider.Direct, "Opening Settings", true),
+                Triple(Decider.Llm, "Tapping “Bluetooth”", true),
+                Triple(Decider.Llm, "Finish", true),
+            ),
+            result.timeline.map { Triple(it.decidedBy, it.action, it.success) },
+        )
+        assertEquals(0L, result.timeline.first().thinkMs)
+        assertTrue(result.timeline[1].thinkMs > 0)
 
         assertEquals(
             listOf("open_app" to null, "open_app" to true, "tap" to null, "tap" to true),

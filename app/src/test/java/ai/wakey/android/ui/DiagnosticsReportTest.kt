@@ -1,7 +1,11 @@
 package ai.wakey.android.ui
 
+import ai.wakey.android.agent.Decider
+import ai.wakey.android.agent.StepTiming
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AssistantUiState
+import ai.wakey.android.core.InputSource
+import ai.wakey.android.core.TurnTimings
 import ai.wakey.android.core.WakeStats
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,6 +29,20 @@ class DiagnosticsReportTest {
         )) {
             assertTrue("missing “$expected” in\n$report", expected in report)
         }
+    }
+
+    @Test
+    fun `the last agent run is listed step by step`() {
+        val timeline = listOf(
+            StepTiming(Decider.Direct, 0, 900, "Opening Instagram", true),
+            StepTiming(Decider.Jev, 450, 700, "Tapping “Search”", true),
+            StepTiming(Decider.Llm, 1_600, 1_100, "Typing “cats”", false),
+        )
+        val state = AssistantUiState(lastTimings = TurnTimings(InputSource.WakeWord, timeline = timeline))
+        val report = diagnosticsReport(device, setup, WakeySettings(), state, WakeStats(), micMuted = false)
+        assertTrue(report, "  1. direct 0 ms → Opening Instagram 900 ms" in report)
+        assertTrue(report, "  2. Jev 450 ms → Tapping “Search” 700 ms" in report)
+        assertTrue(report, "  3. LLM 1.6 s → Typing “cats” 1.1 s FAILED" in report)
     }
 
     @Test

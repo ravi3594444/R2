@@ -27,7 +27,22 @@ data class AgentResult(
     val firstActionAtMs: Long?,
     /** Steps decided by the fast decision model (Jev) instead of the LLM. */
     val decisionCalls: Int = 0,
+    /** Where the time went, step by step, for Diagnostics. */
+    val timeline: List<StepTiming> = emptyList(),
 )
+
+/** One step of an agent run: who chose it, how long choosing took and how long doing it took. */
+data class StepTiming(
+    val decidedBy: Decider,
+    /** Waiting for the model(s) that chose this step; 0 for later calls of a batched turn. */
+    val thinkMs: Long,
+    /** Performing the action and waiting for the screen to settle. */
+    val actMs: Long,
+    val action: String,
+    val success: Boolean,
+)
+
+enum class Decider(val label: String) { Jev("Jev"), Llm("LLM"), Direct("direct") }
 
 data class ConfirmationRequest(
     /** e.g. "Send this WhatsApp message to Priya?" */

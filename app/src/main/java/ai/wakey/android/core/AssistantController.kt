@@ -519,6 +519,7 @@ class AssistantController(
                     clock.steps = result.steps
                     clock.llmCalls = result.llmCalls
                     clock.decisionCalls = result.decisionCalls
+                    clock.timeline = result.timeline
                     clock.promptTokens = result.promptTokens
                     clock.completionTokens = result.completionTokens
                     result.firstActionAtMs?.let { clock.firstActionAt = it }
@@ -788,6 +789,7 @@ class AssistantController(
         var steps = 0
         var llmCalls = 0
         var decisionCalls = 0
+        var timeline: List<ai.wakey.android.agent.StepTiming> = emptyList()
         var promptTokens = 0
         var completionTokens = 0
 
@@ -804,6 +806,7 @@ class AssistantController(
             steps = steps,
             llmCalls = llmCalls,
             decisionCalls = decisionCalls,
+            timeline = timeline,
             promptTokens = promptTokens,
             completionTokens = completionTokens,
         )

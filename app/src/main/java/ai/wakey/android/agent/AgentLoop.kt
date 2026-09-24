@@ -112,6 +112,10 @@ class AgentLoop internal constructor(
         private var autoShotSignature: String? = null
         private var lastOutcome: ActionOutcome? = null
         private var decisionCalls = 0
+        private val timeline = mutableListOf<StepTiming>()
+        /** Who chose the step about to run and how long that took; consumed by the first action after it. */
+        private var decider = Decider.Llm
+        private var thinkMs = 0L
         /** Model turns to leave to the LLM after a fast decision didn't help; the fast model is off for good on errors. */
         private var fastCooldown = 0
         private var fastOff = false
@@ -124,7 +128,13 @@ class AgentLoop internal constructor(
         private var finishChecked = false
 
         fun result(status: AgentStatus, reply: String) =
-            AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt, decisionCalls)
+            AgentResult(reply, status, steps, llmCalls, promptTokens, completionTokens, firstActionAt, decisionCalls, timeline.toList())
+
+        /** Adds a step to the timeline, charging it the pending think time. */
+        private fun record(action: String, actMs: Long, success: Boolean) {
+            if (timeline.size < MAX_TIMELINE) timeline += StepTiming(decider, thinkMs, actMs, action, success)
+            thinkMs = 0
+        }
 
         suspend fun run(): AgentResult {
             val controller = screen()
@@ -153,6 +163,7 @@ class AgentLoop internal constructor(
                 val call = ToolCall(OPENING_CALL_ID, AgentTools.OPEN_APP, JSONObject().put("name", app).toString())
                 messages += ChatMessage.Assistant(null, listOf(call))
                 steps++
+                decider = Decider.Direct
                 act(AgentAction.OpenApp(app, sensitive = false, reason = null), call)?.let { return it }
             }
 
@@ -160,7 +171,11 @@ class AgentLoop internal constructor(
                 currentCoroutineContext().ensureActive()
                 attachScreenshotIfThin()
                 val request = ChatRequest(messages.toList(), tools, maxTokens = MAX_COMPLETION_TOKENS, sessionId = affinityId)
-                val response = when (val race = decideNext(request)) {
+                val thinkStart = clock()
+                val race = decideNext(request)
+                thinkMs = clock() - thinkStart
+                decider = if (race is Race.Fast) Decider.Jev else Decider.Llm
+                val response = when (race) {
                     is Race.Fast -> {
                         when (val fast = runFastMove(race.move, race.screen)) {
                             is FastResult.Finished -> return fast.result
@@ -180,7 +195,10 @@ class AgentLoop internal constructor(
                 if (calls.isEmpty()) {
                     steps++
                     // A plain text answer is a finish.
-                    response.text?.trim()?.takeIf { it.isNotEmpty() }?.let { return result(AgentStatus.Completed, it) }
+                    response.text?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                        record("Reply", 0, true)
+                        return result(AgentStatus.Completed, it)
+                    }
                     messages += ChatMessage.User("Respond with a tool call.")
                     if (++invalidStreak >= MAX_INVALID) return result(AgentStatus.Failed, replies.confused())
                     continue
@@ -271,7 +289,7 @@ class AgentLoop internal constructor(
                         llmCall.cancel()
                         Race.Fast(move, screen)
                     } else {
-                        fastCooldown = 1
+                        // Unsure here says nothing about the next screen, so Jev tries again next step.
                         Race.Llm(llmCall.await())
                     }
                 }
@@ -379,6 +397,7 @@ class AgentLoop internal constructor(
                 is AgentAction.Finish -> {
                     val correction = if (finishChecked) null else FinishCheck.unopenedTarget(goal, observation)
                     finishChecked = true
+                    record("Finish", 0, correction == null)
                     if (correction == null) return result(AgentStatus.Completed, action.reply)
                     messages += ChatMessage.Tool(call.id, call.name, correction)
                 }
@@ -427,8 +446,9 @@ class AgentLoop internal constructor(
                 }
             }
             currentCoroutineContext().ensureActive()
+            val actStart = clock()
             val info = started(call, describe(action))
-            if (firstActionAt == null) firstActionAt = clock()
+            if (firstActionAt == null) firstActionAt = actStart
             val before = observation?.signature
             val controller = screen()
             val launch = try {
@@ -446,6 +466,7 @@ class AgentLoop internal constructor(
             lastOutcome = launch.outcome
             actionLog += (if (launch.outcome.success) "" else "FAILED: ") + describe(action)
             dropScreenshot()
+            record(describe(action), clock() - actStart, launch.outcome.success)
             listener.onAction(info.copy(result = launch.outcome.message, success = launch.outcome.success))
             addToolResult(call, launch.outcome, after, "New screen")
 
@@ -613,10 +634,11 @@ class AgentLoop internal constructor(
         const val OPENING_CALL_ID = "wakey_open_app"
         /** A tool call needs well under this; it also stops a runaway reply from adding latency. */
         const val MAX_COMPLETION_TOKENS = 400
-        const val SETTLE_MS = 700L
+        const val SETTLE_MS = 650L
         const val SETTLE_SLACK_MS = 50L
-        const val STABLE_POLL_MS = 200L
-        const val MAX_STABLE_CHECKS = 4
+        const val STABLE_POLL_MS = 150L
+        const val MAX_STABLE_CHECKS = 3
+        const val MAX_TIMELINE = 30
         /** Batched calls per model turn; enough for "open search, type, submit". */
         const val MAX_CALLS_PER_TURN = 3
         /** Fast decisions per run; beyond this a task isn't routine and the LLM steers. */
