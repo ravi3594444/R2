@@ -50,6 +50,16 @@ class CaptureRouterTest {
     }
 
     @Test
+    fun `an unsure detection is reported as needing a check`() {
+        router.enableWake(detector, HEY_WAKEY, 0.5f, events::add)
+        feed(10)
+        detector.detectNext = WakeDetection("HEY WAKEY", keywordStartLag = 16_000, keywordEndLag = 4_800, needsCheck = true)
+        feed()
+        assertTrue(events.single().needsCheck)
+        assertEquals(Mode.Holding, router.currentMode)
+    }
+
+    @Test
     fun `held audio never reaches back past the pre-roll`() {
         router.enableWake(detector, HEY_WAKEY, 0.5f, events::add)
         feed(200)

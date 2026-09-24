@@ -23,6 +23,14 @@ class AssistantControllerTextTest {
     }
 
     @Test
+    fun stripsWakeyAsFluxMishearsIt() {
+        assertEquals("Turn on the flashlight.", strip("Hey, Becky. Turn on the flashlight."))
+        assertEquals("open YouTube", strip("Hey Vicky open YouTube"))
+        assertEquals("", strip("Hey, Becky."))
+        assertEquals("Vicky is my friend", strip("Vicky is my friend", "Hello Computer"))
+    }
+
+    @Test
     fun leavesCommandsWithoutWakePhraseAlone() {
         assertEquals("turn on the flashlight", strip("turn on the flashlight"))
         assertEquals("open Settings and find Bluetooth", strip("open Settings and find Bluetooth"))

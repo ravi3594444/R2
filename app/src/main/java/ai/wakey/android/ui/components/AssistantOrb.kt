@@ -69,6 +69,9 @@ import kotlin.math.sin
 /** The inner disc's share of the orb; the ring around it is room for glows, ripples and arcs. */
 private const val CORE_FRACTION = 0.62f
 
+/** The lower edge of the lit core's white-to-grey gradient, which gives it a little depth. */
+private val CORE_SHADE = Color(0xFF8C8C8C)
+
 /**
  * Wakey's orb and main mic button. Each phase has its own quiet animation:
  * idle is static, wake listening breathes, hearing ripples with the voice, thinking spins an arc,
@@ -109,12 +112,12 @@ fun AssistantOrb(
         label = "coreLight",
     )
     val coreDark by animateColorAsState(
-        if (idle) MaterialTheme.colorScheme.surfaceContainerHigh else lerp(phaseColor, WakeyColors.PeriwinkleDeep, 0.55f),
+        if (idle) MaterialTheme.colorScheme.surfaceContainerHigh else lerp(phaseColor, CORE_SHADE, 0.5f),
         tween(450),
         label = "coreDark",
     )
     val contentColor by animateColorAsState(
-        if (idle) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFF0A1433),
+        if (idle) MaterialTheme.colorScheme.onSurfaceVariant else WakeyColors.Black,
         label = "orbContent",
     )
 
@@ -240,7 +243,7 @@ private fun ThinkingArc(accent: Color, modifier: Modifier) {
             drawArc(
                 brush = Brush.sweepGradient(
                     0f to Color.Transparent,
-                    0.45f to WakeyColors.Periwinkle.copy(alpha = 0.5f),
+                    0.45f to accent.copy(alpha = 0.35f),
                     0.75f to accent,
                     1f to Color.Transparent,
                     center = center,

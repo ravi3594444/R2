@@ -28,6 +28,7 @@ class DeepgramFluxStt internal constructor(
     private val http: OkHttpClient,
     private val apiKey: () -> String?,
     private val endpoint: HttpUrl,
+    private val turns: FluxTurnTuning = FluxTurnTuning(),
 ) : SpeechToText {
     constructor(http: OkHttpClient, apiKey: () -> String?) : this(http, apiKey, LISTEN_ENDPOINT)
 
@@ -92,7 +93,7 @@ class DeepgramFluxStt internal constructor(
     private fun currentKey(): String? = runCatching(apiKey).getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
 
     private fun listenRequest(config: SttConfig, key: String): Request = Request.Builder()
-        .url(fluxListenUrl(endpoint, config))
+        .url(fluxListenUrl(endpoint, config, turns))
         .header("Authorization", "Token $key")
         .build()
 
@@ -140,14 +141,22 @@ class DeepgramFluxStt internal constructor(
         val LISTEN_ENDPOINT = "https://api.deepgram.com/v2/listen".toHttpUrl()
 
         /**
-         * End-of-turn tuning for short spoken commands. `eot_threshold` stays at Flux's default 0.7:
-         * commands such as "open Chrome and search for cats" often pause mid-sentence, and lower
-         * values cut them off. `eot_timeout_ms` drops from 5000 to 3000 so that when the model is never
-         * confident (mumbled or code-mixed speech) the turn still ends 3 s after the user goes quiet.
-         * Eager end-of-turn stays off because nothing speculates on unfinished turns.
+         * End-of-turn tuning for spoken commands, measured on 54 Indian-English and Hinglish command
+         * clips with "Hey Wakey," in front (short, long, sped up, and with a 0.8–1.2 s pause
+         * mid-sentence), plus 30 noisy/far-field versions, streamed live:
+         * - `eot_threshold` 0.85 instead of 0.7: 0.7 ended 5 of 54 commands at a pause ("Set an
+         *   alarm." for "set an alarm for 6:30", "Settings main." for "Settings mein Bluetooth on
+         *   karo"), and the cut transcripts were also worse overall (command WER 29.6% → 20.0%,
+         *   key words right 77% → 84%). No cut-offs at 0.85. It costs ~0.5 s: speech end → final
+         *   1.28 s median (0.74 s before), 1.77 s p90.
+         * - `eot_timeout_ms` 1500: ends a turn 1.5 s after real silence even when the model is
+         *   unsure (mumbled or code-mixed speech).
+         * - In background chatter neither fires, so [FluxSession] ends a heard request by hand.
+         * Nova-3 (multi, en-IN, hi) was also measured: similar accuracy, but its silence endpointing
+         * cut commands at pauses. Eager end-of-turn stays off because nothing speculates on unfinished turns.
          */
-        const val EOT_THRESHOLD = "0.7"
-        const val EOT_TIMEOUT_MS = 3_000
+        const val EOT_THRESHOLD = "0.85"
+        const val EOT_TIMEOUT_MS = 1_500
 
         private const val TEST_MODEL = "flux-general-multi"
         private const val TEST_TIMEOUT_MS = 10_000L
@@ -156,21 +165,32 @@ class DeepgramFluxStt internal constructor(
     }
 }
 
+/** Flux end-of-turn parameters; the defaults are the tuned values documented on [DeepgramFluxStt]. */
+internal data class FluxTurnTuning(
+    val eotThreshold: String = DeepgramFluxStt.EOT_THRESHOLD,
+    val eotTimeoutMs: Int = DeepgramFluxStt.EOT_TIMEOUT_MS,
+)
+
 /**
  * The Flux listen URL for [config]. `language_hint` and `keyterm` are repeated once per value;
  * hints are sent only to multilingual models because Flux rejects them elsewhere with HTTP 400.
+ *
+ * On the command clips behind [DeepgramFluxStt.EOT_THRESHOLD], hints en+hi transcribed the same as
+ * no hints, while en alone turned Hinglish verbs into English words ("Torch jalao" → "George
+ * July"); keyterms left `flux-general-multi` transcripts unchanged, word for word.
  */
-internal fun fluxListenUrl(endpoint: HttpUrl, config: SttConfig): HttpUrl = endpoint.newBuilder().apply {
-    addQueryParameter("model", config.model)
-    addQueryParameter("encoding", "linear16")
-    addQueryParameter("sample_rate", config.sampleRate.toString())
-    addQueryParameter("eot_threshold", DeepgramFluxStt.EOT_THRESHOLD)
-    addQueryParameter("eot_timeout_ms", DeepgramFluxStt.EOT_TIMEOUT_MS.toString())
-    if ("-multi" in config.model) {
-        config.languageHints.cleaned().forEach { addQueryParameter("language_hint", it) }
-    }
-    config.keyterms.cleaned().forEach { addQueryParameter("keyterm", it) }
-}.build()
+internal fun fluxListenUrl(endpoint: HttpUrl, config: SttConfig, turns: FluxTurnTuning = FluxTurnTuning()): HttpUrl =
+    endpoint.newBuilder().apply {
+        addQueryParameter("model", config.model)
+        addQueryParameter("encoding", "linear16")
+        addQueryParameter("sample_rate", config.sampleRate.toString())
+        addQueryParameter("eot_threshold", turns.eotThreshold)
+        addQueryParameter("eot_timeout_ms", turns.eotTimeoutMs.toString())
+        if ("-multi" in config.model) {
+            config.languageHints.cleaned().forEach { addQueryParameter("language_hint", it) }
+        }
+        config.keyterms.cleaned().forEach { addQueryParameter("keyterm", it) }
+    }.build()
 
 private fun List<String>.cleaned(): List<String> = map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 

@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonColors
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
@@ -45,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -92,11 +94,23 @@ fun TtsEngineSelector(selected: TtsEngine, onSelect: (TtsEngine) -> Unit, modifi
                 selected = engine == selected,
                 onClick = { onSelect(engine) },
                 shape = SegmentedButtonDefaults.itemShape(index, TtsEngine.entries.size),
+                colors = monoSegmentColors(),
                 label = { Text(engine.shortLabel(), maxLines = 1) },
             )
         }
     }
 }
+
+/** The chosen segment filled white, the others outlined. */
+@Composable
+internal fun monoSegmentColors(): SegmentedButtonColors = SegmentedButtonDefaults.colors(
+    activeContainerColor = MaterialTheme.colorScheme.primary,
+    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+    activeBorderColor = MaterialTheme.colorScheme.primary,
+    inactiveContainerColor = Color.Transparent,
+    inactiveContentColor = MaterialTheme.colorScheme.onSurface,
+    inactiveBorderColor = MaterialTheme.colorScheme.outline,
+)
 
 /** Preview turns into Stop while anything is being spoken, so a long sample can be cut short. */
 @Composable

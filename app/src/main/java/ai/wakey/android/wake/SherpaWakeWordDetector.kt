@@ -31,7 +31,7 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
     override fun setKeyword(keyword: EncodedKeyword, sensitivity: Float) {
         val scoring = scoringFor(sensitivity)
         this.keyword = keyword
-        keywordLine = keyword.toSherpaLine(scoring.boost, scoring.threshold)
+        keywordLine = keyword.toSherpaKeywords(scoring.boost, scoring.threshold, checkScoringFor(sensitivity))
         restart()
     }
 
@@ -75,12 +75,11 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
     private fun toDetection(result: KeywordSpotterResult): WakeDetection {
         val span = KeywordTiming.locate(result.timestamps, decodedChunks, TRAILING_BLANKS)
             ?.takeIf { it.endSample <= samplesAccepted }
-        val current = keyword
-        val phrase = if (current != null && result.keyword == current.tag) current.phrase else result.keyword.replace('_', ' ')
         return WakeDetection(
-            phrase = phrase,
+            phrase = reportedPhrase(result.keyword, keyword),
             keywordStartLag = span?.let { samplesAccepted - it.startSample },
             keywordEndLag = span?.let { samplesAccepted - it.endSample },
+            needsCheck = result.keyword == keyword?.checkTag,
         )
     }
 
@@ -103,6 +102,10 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
          */
         private const val KEYWORDS_FILE = "wake/empty_keywords.txt"
 
+        /** The user's phrase for a detected [tag]; every pronunciation variant carries the phrase's tag. */
+        internal fun reportedPhrase(tag: String, keyword: EncodedKeyword?): String =
+            if (keyword != null && (tag == keyword.tag || tag == keyword.checkTag)) keyword.phrase else tag.replace('_', ' ')
+
         /**
          * Maps the user's sensitivity (0 = fewest false wakes, 1 = most eager) to keyword scoring.
          * Chosen on desktop with the bundled model: detection saturated from threshold 0.25 down on
@@ -113,6 +116,20 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
             val s = if (sensitivity.isNaN()) 0.5f else sensitivity.coerceIn(0f, 1f)
             return KeywordScoring(boost = 1f + s, threshold = 0.30f - 0.24f * s)
         }
+
+        /**
+         * Scoring for the check variants, which are confirmed by speech recognition before Wakey
+         * responds, so they can be looser: a lower threshold than [scoringFor] at every sensitivity.
+         * Default 0.5 gives boost 1.5, threshold 0.10.
+         */
+        fun checkScoringFor(sensitivity: Float): KeywordScoring {
+            val sure = scoringFor(sensitivity)
+            return KeywordScoring(boost = CHECK_BOOST, threshold = maxOf(MIN_CHECK_THRESHOLD, sure.threshold - CHECK_THRESHOLD_DROP))
+        }
+
+        private const val CHECK_BOOST = 1.5f
+        private const val CHECK_THRESHOLD_DROP = 0.08f
+        private const val MIN_CHECK_THRESHOLD = 0.04f
 
         /**
          * Loads the KWS model from the APK assets. Takes a few hundred milliseconds.

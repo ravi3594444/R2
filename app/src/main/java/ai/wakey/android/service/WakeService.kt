@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -22,8 +23,9 @@ import kotlinx.coroutines.launch
  * wake listening alive with the screen off (partial wake lock) and shows the listening
  * notification with working Stop and Turn off actions.
  *
- * Not sticky: a system restart would start a microphone service from the background, which
- * Android 14+ forbids, so after being killed it stays off until the user turns it on again.
+ * Sticky: if Android kills it, it restarts when it may. A background restart may start the
+ * microphone only while Wakey is the default assistant (Android's exemption for apps providing the
+ * VoiceInteractionService); otherwise it stops itself and comes back the next time Wakey is opened.
  */
 class WakeService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
@@ -35,11 +37,13 @@ class WakeService : LifecycleService() {
                 WakeyApp.graph.controller.stop(silent = true)
                 shutDown()
             }
-            // Already listening: a second start must not open the microphone again.
-            isRunning -> Unit
+            // Already listening: a second start must not open the microphone again. Entering the
+            // foreground again answers this start (Android expects it after startForegroundService)
+            // and, while Wakey is visible, renews the service's microphone access for the background.
+            isRunning -> refreshForeground()
             else -> startListening()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startListening() {
@@ -87,6 +91,20 @@ class WakeService : LifecycleService() {
         }
     }
 
+    private fun refreshForeground() {
+        val notification = WakeyApp.graph.notifications.buildListening(WakeyApp.graph.controller.state.value)
+        try {
+            ServiceCompat.startForeground(
+                this, Notifications.LISTENING_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+        } catch (e: IllegalStateException) {
+            // Still in the foreground from the first start; the existing access stays as it was.
+            Log.w(TAG, "Could not renew the foreground service", e)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Could not renew the foreground service", e)
+        }
+    }
+
     private fun shutDown() {
         // Cleared first so no late notification update re-posts the notification being removed.
         isRunning = false
@@ -109,6 +127,7 @@ class WakeService : LifecycleService() {
         /** Stops listening and the service. Deliver with `startService`, never `startForegroundService`. */
         const val ACTION_STOP = "ai.wakey.android.action.STOP_LISTENING"
         private const val WAKE_LOCK_TAG = "Wakey:wake"
+        private const val TAG = "WakeService"
         internal const val MIC_PERMISSION_MESSAGE = "Allow microphone access so Wakey can listen for the wake word."
         internal const val BACKGROUND_START_MESSAGE =
             "Android blocked wake listening from starting in the background. Open Wakey and turn it on again."

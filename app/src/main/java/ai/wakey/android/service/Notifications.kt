@@ -31,7 +31,7 @@ import androidx.core.content.ContextCompat
  */
 class Notifications(
     private val context: Context,
-    private val wakePhrase: () -> String = { WakeyApp.graph.settings.current.wakePhrase },
+    private val wakePhrase: () -> String = { WakeyApp.graph.settings.current.spokenWake },
 ) {
     private val manager = NotificationManagerCompat.from(context)
     private val mainHandler = Handler(Looper.getMainLooper())

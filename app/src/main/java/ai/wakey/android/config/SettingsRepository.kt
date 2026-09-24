@@ -36,6 +36,7 @@ class SettingsRepository(context: Context) {
     private fun load(): WakeySettings {
         val d = WakeySettings()
         return WakeySettings(
+            wakeMode = enumOr(prefs.getString("wake_mode", null), d.wakeMode),
             wakePhrase = prefs.getString("wake_phrase", d.wakePhrase) ?: d.wakePhrase,
             wakeSensitivity = prefs.getFloat("wake_sensitivity", d.wakeSensitivity),
             ttsEngine = enumOr(prefs.getString("tts_engine", null), d.ttsEngine),
@@ -49,11 +50,14 @@ class SettingsRepository(context: Context) {
             llmModel = prefs.getString("llm_model", d.llmModel) ?: d.llmModel,
             maxAgentSteps = prefs.getInt("max_agent_steps", d.maxAgentSteps),
             onboardingDone = prefs.getBoolean("onboarding_done", d.onboardingDone),
+            wakeListeningWanted = prefs.getBoolean("wake_listening_wanted", d.wakeListeningWanted),
+            wakeSound = prefs.getBoolean("wake_sound", d.wakeSound),
         ).let(::sanitize)
     }
 
     private fun save(s: WakeySettings) {
         prefs.edit()
+            .putString("wake_mode", s.wakeMode.name)
             .putString("wake_phrase", s.wakePhrase)
             .putFloat("wake_sensitivity", s.wakeSensitivity)
             .putString("tts_engine", s.ttsEngine.name)
@@ -67,6 +71,8 @@ class SettingsRepository(context: Context) {
             .putString("llm_model", s.llmModel)
             .putInt("max_agent_steps", s.maxAgentSteps)
             .putBoolean("onboarding_done", s.onboardingDone)
+            .putBoolean("wake_listening_wanted", s.wakeListeningWanted)
+            .putBoolean("wake_sound", s.wakeSound)
             .apply()
     }
 

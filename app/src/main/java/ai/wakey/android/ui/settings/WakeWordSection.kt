@@ -1,9 +1,12 @@
 package ai.wakey.android.ui.settings
 
+import ai.wakey.android.config.WakeMode
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AssistantController
 import ai.wakey.android.ui.components.NoteText
 import ai.wakey.android.ui.components.SectionCard
+import ai.wakey.android.ui.components.SwitchRow
+import ai.wakey.android.ui.components.monoSegmentColors
 import ai.wakey.android.ui.normalizeWakePhrase
 import ai.wakey.android.wake.EncodedKeyword
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +23,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Hearing
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -77,11 +84,64 @@ fun WakeWordSection(controller: AssistantController, settings: WakeySettings) {
     SectionCard(
         "Wake word",
         icon = Icons.Rounded.Hearing,
-        subtitle = "Short, distinct English phrases work best, like “Hey Wakey”.",
+        subtitle = "How you start talking to Wakey hands-free.",
     ) {
+        WakeModeSelector(settings.wakeMode) { mode -> controller.updateSettings { it.copy(wakeMode = mode) } }
+        if (settings.wakeMode == WakeMode.HeyCommand) {
+            NoteText(
+                "Say “Hey” and your request in one go: “Hey, open Instagram”, “Hey, torch jalao”. " +
+                    "Wakey acts only when a command follows “hey”, so “hey, how are you?” is ignored. " +
+                    "After each “hey” it hears, the next few seconds of audio go to Deepgram to check. " +
+                    "For now this catches fewer requests than “Hey Wakey” (about 7 in 10 in tests, against 9 in 10), " +
+                    "and “Hey Wakey” keeps working in this mode too.",
+            )
+        } else {
+            PhraseEditor(draft, onDraft = { draft = it }, phrase = phrase, current = current, canApply = canApply, apply = apply)
+        }
+        SensitivitySlider(settings.wakeSensitivity) { value -> controller.updateSettings { it.copy(wakeSensitivity = value) } }
+        SwitchRow(
+            title = "Wake sound",
+            subtitle = "A short chime when Wakey hears you.",
+            checked = settings.wakeSound,
+            onCheckedChange = { on -> controller.updateSettings { it.copy(wakeSound = on) } },
+        )
+        NoteText(
+            "Detection runs on this phone. When it is unsure, the audio from just before is sent to " +
+                "Deepgram to check; otherwise no audio leaves the phone until you speak to Wakey.",
+            icon = Icons.Rounded.PhoneAndroid,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WakeModeSelector(selected: WakeMode, onSelect: (WakeMode) -> Unit) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        WakeMode.entries.forEachIndexed { index, mode ->
+            SegmentedButton(
+                selected = mode == selected,
+                onClick = { onSelect(mode) },
+                shape = SegmentedButtonDefaults.itemShape(index, WakeMode.entries.size),
+                colors = monoSegmentColors(),
+                label = { Text(mode.label, maxLines = 1) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun PhraseEditor(
+    draft: String,
+    onDraft: (String) -> Unit,
+    phrase: String,
+    current: Result<EncodedKeyword>?,
+    canApply: Boolean,
+    apply: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         OutlinedTextField(
             value = draft,
-            onValueChange = { draft = it },
+            onValueChange = onDraft,
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Wake phrase") },
             singleLine = true,
@@ -94,14 +154,10 @@ fun WakeWordSection(controller: AssistantController, settings: WakeySettings) {
             Button(onClick = apply, enabled = canApply) { Text("Apply") }
             if (phrase != WakeySettings.DEFAULT_WAKE_PHRASE) {
                 Spacer(Modifier.width(8.dp))
-                TextButton(onClick = { draft = WakeySettings.DEFAULT_WAKE_PHRASE }) { Text("Use “${WakeySettings.DEFAULT_WAKE_PHRASE}”") }
+                TextButton(onClick = { onDraft(WakeySettings.DEFAULT_WAKE_PHRASE) }) { Text("Use “${WakeySettings.DEFAULT_WAKE_PHRASE}”") }
             }
         }
-        SensitivitySlider(settings.wakeSensitivity) { value -> controller.updateSettings { it.copy(wakeSensitivity = value) } }
-        NoteText(
-            "Detection runs entirely on this phone: listening for the wake word sends no audio anywhere.",
-            icon = Icons.Rounded.PhoneAndroid,
-        )
+        NoteText("Short, distinct English phrases work best, like “Hey Wakey”.")
     }
 }
 

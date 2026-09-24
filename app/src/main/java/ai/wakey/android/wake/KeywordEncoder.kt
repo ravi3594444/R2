@@ -10,13 +10,43 @@ data class EncodedKeyword(
     val phrase: String,
     /** e.g. ["▁HE", "Y", "▁WA", "KE", "Y"]. */
     val tokens: List<String>,
+    /**
+     * Tokens of other ways the phrase is commonly said or heard (see [PronunciationVariants]), e.g.
+     * ["▁HE", "Y", "▁WA", "K", "Y"] for "HEY WAKY". Spotted in the same stream and reported as [phrase].
+     */
+    val variants: List<List<String>> = emptyList(),
+    /**
+     * Tokens of looser sound-alikes ("HEY WIKY", "HEY RICKY"), spotted in the same stream under
+     * [checkTag]. They catch many wake phrases the model mishears, and some other speech, so a
+     * detection of one is confirmed with speech recognition before Wakey responds.
+     */
+    val checkVariants: List<List<String>> = emptyList(),
 ) {
-    /** Keyword tag reported back by sherpa-onnx on detection. */
+    /** Keyword tag reported back by sherpa-onnx on detection, for [tokens] and every variant. */
     val tag: String get() = phrase.replace(' ', '_')
 
-    /** One sherpa-onnx keywords line: `▁HE Y ▁WA KE Y :boost #threshold @HEY_WAKEY`. */
-    fun toSherpaLine(boostScore: Float, threshold: Float): String =
-        tokens.joinToString(" ") + " :%.2f #%.2f @%s".format(java.util.Locale.US, boostScore, threshold, tag)
+    /** Tag reported for [checkVariants]. */
+    val checkTag: String get() = tag + CHECK_SUFFIX
+
+    /**
+     * The keywords of one sherpa-onnx stream: a `tokens :boost #threshold @TAG` line for [tokens] and
+     * each variant, joined by '/', e.g. `▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY/▁HE Y ▁WA K Y :1.50 ...`,
+     * then a line per check variant scored with [check] and tagged [checkTag].
+     */
+    fun toSherpaKeywords(boostScore: Float, threshold: Float, check: KeywordScoring? = null): String {
+        val scoring = " :%.2f #%.2f @%s".format(Locale.US, boostScore, threshold, tag)
+        val sure = listOf(tokens) + variants
+        val lines = sure.map { it.joinToString(" ") + scoring }.toMutableList()
+        if (check != null) {
+            val checkScoring = " :%.2f #%.2f @%s".format(Locale.US, check.boost, check.threshold, checkTag)
+            checkVariants.filter { it !in sure }.mapTo(lines) { it.joinToString(" ") + checkScoring }
+        }
+        return lines.joinToString("/")
+    }
+
+    companion object {
+        const val CHECK_SUFFIX = "__CHECK"
+    }
 }
 
 class KeywordEncodingException(message: String) : IllegalArgumentException(message)
@@ -27,7 +57,9 @@ class KeywordEncodingException(message: String) : IllegalArgumentException(messa
  *
  * The tokens are exactly what Python `sentencepiece` produces for `encode(phrase.upper())`
  * (checked against 48 reference phrases in the unit tests). Phrases the detector cannot spot
- * reliably are rejected with a message that can be shown as-is in Settings.
+ * reliably are rejected with a message that can be shown as-is in Settings. Each phrase also gets
+ * the tokens of its [PronunciationVariants]: the detector spots common ones under the same tag and
+ * looser sound-alikes under a tag whose detections are confirmed first.
  *
  * @param bpeModel the model's `bpe.model` (a SentencePiece unigram model).
  * @param validTokens the symbols in the model's `tokens.txt`.
@@ -50,8 +82,7 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         words.firstOrNull { word -> word.none { it.isAsciiLetter() } }?.let { fail("“$it” is not a word.") }
 
         val upper = words.map { it.uppercase(Locale.ROOT) }
-        val text = (if (model.addDummyPrefix) WORD_START else "") + upper.joinToString(WORD_START)
-        val tokens = model.segment(text) ?: fail("“$display” can't be spelled with the wake-word model's vocabulary.")
+        val tokens = segment(upper) ?: fail("“$display” can't be spelled with the wake-word model's vocabulary.")
         tokens.firstOrNull { it !in validTokens }?.let {
             fail("“$display” can't be spelled with the wake-word model's vocabulary (missing “$it”).")
         }
@@ -59,8 +90,33 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         if (display.count { it.isAsciiLetter() } < MIN_LETTERS || tokens.size < MIN_TOKENS) {
             fail("“$display” is too short to detect reliably. Use a longer phrase, like “Hey Wakey”.")
         }
-        return EncodedKeyword(upper.joinToString(" "), tokens)
+        val variants = spell(PronunciationVariants.of(upper)).filter { it != tokens }
+        val checks = spell(PronunciationVariants.checksOf(upper)).filter { it != tokens && it !in variants }
+        return EncodedKeyword(upper.joinToString(" "), tokens, variants, checks)
     }
+
+    /** Tokens of each respelling the model's vocabulary can express, without duplicates. */
+    private fun spell(respellings: List<List<String>>): List<List<String>> = respellings
+        .mapNotNull { words -> segment(words)?.takeIf { pieces -> pieces.all { it in validTokens } } }
+        .distinct()
+
+    /**
+     * The keywords of [ai.wakey.android.config.WakeMode.HeyCommand]: "Hey Wakey" as usual, plus a
+     * check line for "hey" (also heard as "hay" or "he") followed by each of [HEY_COMMAND_WORDS]
+     * ("HEY OPEN", "HAY INSTAGRAM", "HE TORCH"…). "Hey" alone is too short and too common for the
+     * detector: on the desktop evaluation it caught at most 71% of clean "hey"s while firing 100+
+     * times an hour on ordinary speech. These lines caught 69% of clean "Hey, <command>" requests
+     * at 17 checks an hour of ordinary speech, and the transcript confirms each one.
+     */
+    fun encodeHey(): EncodedKeyword {
+        val wakey = encode(HEY_WAKEY)
+        val known = setOf(wakey.tokens) + wakey.variants
+        val commands = spell(HEY_SOUNDS.flatMap { hey -> HEY_COMMAND_WORDS.map { listOf(hey, it) } }).filter { it !in known }
+        return wakey.copy(checkVariants = (wakey.checkVariants + commands).distinct())
+    }
+
+    private fun segment(words: List<String>): List<String>? =
+        model.segment((if (model.addDummyPrefix) WORD_START else "") + words.joinToString(WORD_START))
 
     companion object {
         const val ASSET_DIR = "kws"
@@ -68,6 +124,21 @@ class KeywordEncoder(bpeModel: ByteArray, private val validTokens: Set<String>) 
         const val MAX_LENGTH = 40
         const val MIN_LETTERS = 5
         const val MIN_TOKENS = 3
+        const val HEY = "HEY"
+        private const val HEY_WAKEY = "Hey Wakey"
+
+        /** "Hey" as the model hears it, said quickly or with an Indian-English vowel. */
+        private val HEY_SOUNDS = listOf(HEY, "HAY", "HE")
+
+        /** Words that start most phone requests after "hey": verbs, apps and phone features. */
+        val HEY_COMMAND_WORDS = listOf(
+            "OPEN", "TURN", "PLAY", "CALL", "SEARCH", "SET", "SEND", "TAKE", "SHOW", "START", "FIND", "GO", "CLOSE",
+            "MESSAGE", "TEXT", "READ", "CHECK", "CAN", "PLEASE",
+            "INSTAGRAM", "YOUTUBE", "WHATSAPP", "TORCH", "FLASHLIGHT", "CAMERA", "SETTINGS", "CHROME", "GOOGLE",
+            "BLUETOOTH", "WIFI", "MUSIC", "CALCULATOR", "SPOTIFY", "GALLERY", "PHONE", "MAPS", "ALARM", "FACEBOOK",
+            "SNAPCHAT", "TELEGRAM", "GMAIL", "NETFLIX", "AMAZON", "FLIPKART", "PAYTM", "ZOMATO", "SWIGGY", "VOLUME",
+            "MUJHE", "MERA", "ZARA",
+        )
 
         private const val WORD_START = "▁"
         private val WHITESPACE = Regex("\\s+")

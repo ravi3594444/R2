@@ -11,7 +11,9 @@ enum class AssistantPhase(val label: String) {
 }
 
 /** How a request entered the pipeline. Voice and text share everything after transcription. */
-enum class InputSource(val label: String) { WakeWord("wake word"), Mic("mic"), PushToTalk("push-to-talk"), Text("typed") }
+enum class InputSource(val label: String) {
+    WakeWord("wake word"), Mic("mic"), PushToTalk("push-to-talk"), Assistant("assistant button"), Text("typed"),
+}
 
 enum class Speaker { User, Wakey, System }
 
@@ -66,6 +68,20 @@ data class PendingConfirmation(
     val id: Long,
     val question: String,
     val detail: String,
+)
+
+/** Wake-word activity since Wakey started, for Diagnostics. */
+data class WakeStats(
+    /** Sure detections that opened the microphone stream. */
+    val wakes: Int = 0,
+    /** Unsure detections confirmed by the transcript. */
+    val checksConfirmed: Int = 0,
+    /** Unsure detections dropped because the transcript did not start with the wake phrase. */
+    val checksRejected: Int = 0,
+    /** What Deepgram heard for the last dropped check, for tuning. */
+    val lastRejectedHeard: String? = null,
+    /** Times the open microphone went silent because Android muted it. */
+    val mutedEvents: Int = 0,
 )
 
 data class AssistantUiState(

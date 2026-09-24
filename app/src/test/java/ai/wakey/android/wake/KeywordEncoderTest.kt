@@ -46,12 +46,71 @@ class KeywordEncoderTest {
     }
 
     @Test
-    fun `default phrase gives the keyword line validated on desktop`() {
+    fun `default phrase gives the keywords validated on desktop`() {
         val scoring = SherpaWakeWordDetector.scoringFor(0.5f)
         assertEquals(
-            "▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY",
-            encoder.encode("Hey Wakey").toSherpaLine(scoring.boost, scoring.threshold),
+            listOf(
+                "▁HE Y ▁WA KE Y", "▁HE Y ▁WA K Y", "▁HE Y ▁WA K I E", "▁HE Y ▁WA K I", "▁HE Y W A KE Y", "▁HE ▁WA KE Y",
+            ).joinToString("/") { "$it :1.50 #0.18 @HEY_WAKEY" },
+            encoder.encode("Hey Wakey").toSherpaKeywords(scoring.boost, scoring.threshold),
         )
+    }
+
+    @Test
+    fun `default phrase adds check lines under their own tag`() {
+        val keyword = encoder.encode("Hey Wakey")
+        // spm.encode("HEY WIKY"), spm.encode("HEYWIKY"), ...
+        assertEquals(
+            listOf("▁HE Y ▁W I K Y", "▁HE Y W I K Y", "▁HE ▁W I K Y", "▁HE Y ▁W I K I", "▁HE Y W I K I", "▁HE ▁W I K I"),
+            keyword.checkVariants.map { it.joinToString(" ") },
+        )
+        val line = keyword.toSherpaKeywords(1.5f, 0.18f, KeywordScoring(1.5f, 0.10f))
+        assertEquals(12, line.split('/').size)
+        assertTrue(line.endsWith("/▁HE ▁W I K I :1.50 #0.10 @HEY_WAKEY__CHECK"))
+        assertEquals(SherpaWakeWordDetector.scoringFor(0.5f).threshold - 0.08f, SherpaWakeWordDetector.checkScoringFor(0.5f).threshold, 1e-6f)
+    }
+
+    @Test
+    fun `hey mode spots hey wakey and checks hey plus a command word`() {
+        val keyword = encoder.encode("Hey Wakey")
+        val hey = encoder.encodeHey()
+        assertEquals(keyword.tokens, hey.tokens)
+        assertEquals(keyword.variants, hey.variants)
+        val checks = hey.checkVariants.map { it.joinToString(" ") }
+        // spm.encode("HEY OPEN"), spm.encode("HEY INSTAGRAM"), spm.encode("HEY TORCH")
+        assertTrue(checks.containsAll(listOf("▁HE Y ▁O P EN", "▁HE Y ▁IN S TA G RA M", "▁HE Y ▁TO R CH", "▁HE Y ▁W I K Y")))
+        assertTrue(checks.size >= KeywordEncoder.HEY_COMMAND_WORDS.size)
+        assertEquals(checks, checks.distinct())
+        assertTrue(hey.checkVariants.none { it == hey.tokens || it in hey.variants })
+    }
+
+    @Test
+    fun `variant tokens match python sentencepiece for the respelled phrase`() {
+        // spm.encode("HEY BUDDEY") etc.; the phrase and its tag stay the user's.
+        val keyword = encoder.encode("hey buddy")
+        assertEquals("HEY_BUDDY", keyword.tag)
+        assertEquals(
+            listOf("▁HE Y ▁BU D DE Y", "▁HE Y ▁BU D DI E", "▁HE Y ▁BU D DI", "▁HE Y B U D D Y", "▁HE ▁BU D D Y"),
+            keyword.variants.map { it.joinToString(" ") },
+        )
+        assertEquals(
+            listOf("▁HE LL O CO M P U TER"),
+            encoder.encode("Hello Computer").variants.map { it.joinToString(" ") },
+        )
+        assertEquals(
+            listOf(
+                "▁WHAT ' S ▁UP ▁WA K Y", "▁WHAT ' S ▁UP ▁WA K I E", "▁WHAT ' S ▁UP ▁WA K I",
+                "▁WHAT ' S U P ▁WA KE Y", "▁WHAT ' S ▁UP W A KE Y",
+            ),
+            encoder.encode("what's up wakey").variants.map { it.joinToString(" ") },
+        )
+    }
+
+    @Test
+    fun `variants use only tokens from tokens txt`() {
+        val limited = KeywordEncoder(modelBytes, tokens - "DI")
+        val variants = limited.encode("hey buddy").variants.map { it.joinToString(" ") }
+        assertEquals(listOf("▁HE Y ▁BU D DE Y", "▁HE Y B U D D Y", "▁HE ▁BU D D Y"), variants)
     }
 
     @Test

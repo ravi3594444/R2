@@ -24,7 +24,7 @@ class FluxMessagesTest {
              "trigger":"manual","sequence_id":8}
             """.trimIndent(),
         )
-        assertEquals(FluxMessage.TurnInfo(TurnEvent.EndOfTurn, "Turn on the flashlight.", listOf("en"), 1.44), message)
+        assertEquals(FluxMessage.TurnInfo(TurnEvent.EndOfTurn, "Turn on the flashlight.", listOf("en"), 1.44, audioWindowEnd = 1.6, endOfTurnConfidence = 0.19), message)
     }
 
     @Test

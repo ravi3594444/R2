@@ -23,8 +23,29 @@ class SherpaWakeWordDetectorTest {
     fun `formats keyword lines with two decimals`() {
         val scoring = SherpaWakeWordDetector.scoringFor(0.25f)
         val line = EncodedKeyword("HELLO COMPUTER", listOf("▁HE", "LL", "O", "▁COMP", "U", "TER"))
-            .toSherpaLine(scoring.boost, scoring.threshold)
+            .toSherpaKeywords(scoring.boost, scoring.threshold)
         assertEquals("▁HE LL O ▁COMP U TER :1.25 #0.24 @HELLO_COMPUTER", line)
+    }
+
+    @Test
+    fun `pronunciation variants share the phrase's scoring and tag`() {
+        val keyword = EncodedKeyword(
+            "HEY WAKEY", listOf("▁HE", "Y", "▁WA", "KE", "Y"),
+            variants = listOf(listOf("▁HE", "Y", "▁WA", "K", "Y"), listOf("▁HE", "Y", "▁WA", "KE", "E")),
+        )
+        assertEquals(
+            "▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY/▁HE Y ▁WA K Y :1.50 #0.18 @HEY_WAKEY/▁HE Y ▁WA KE E :1.50 #0.18 @HEY_WAKEY",
+            keyword.toSherpaKeywords(1.5f, 0.18f),
+        )
+    }
+
+    @Test
+    fun `a detection reports the user's phrase whichever variant fired`() {
+        val keyword = EncodedKeyword("WHAT'S UP WAKEY", listOf("▁WHAT", "'", "S", "▁UP", "▁WA", "KE", "Y"))
+        assertEquals("WHAT'S UP WAKEY", SherpaWakeWordDetector.reportedPhrase("WHAT'S_UP_WAKEY", keyword))
+        // A tag from another list (none today) is still readable.
+        assertEquals("HELLO COMPUTER", SherpaWakeWordDetector.reportedPhrase("HELLO_COMPUTER", keyword))
+        assertEquals("HEY WAKEY", SherpaWakeWordDetector.reportedPhrase("HEY_WAKEY", null))
     }
 
     private fun assertScoring(boost: Float, threshold: Float, actual: KeywordScoring) {

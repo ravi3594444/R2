@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:recognitionService="ai.wakey.android.assist.WakeyRecognitionService"
+    android:sessionService="ai.wakey.android.assist.WakeySessionService"
+    android:settingsActivity="ai.wakey.android.ui.MainActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
+    android:supportsLocalInteraction="false" />
