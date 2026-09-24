@@ -46,12 +46,43 @@ class KeywordEncoderTest {
     }
 
     @Test
-    fun `default phrase gives the keyword line validated on desktop`() {
+    fun `default phrase gives the keywords validated on desktop`() {
         val scoring = SherpaWakeWordDetector.scoringFor(0.5f)
         assertEquals(
-            "▁HE Y ▁WA KE Y :1.50 #0.18 @HEY_WAKEY",
-            encoder.encode("Hey Wakey").toSherpaLine(scoring.boost, scoring.threshold),
+            listOf(
+                "▁HE Y ▁WA KE Y", "▁HE Y ▁WA K Y", "▁HE Y ▁WA K I E", "▁HE Y ▁WA K I", "▁HE Y W A KE Y", "▁HE ▁WA KE Y",
+            ).joinToString("/") { "$it :1.50 #0.18 @HEY_WAKEY" },
+            encoder.encode("Hey Wakey").toSherpaKeywords(scoring.boost, scoring.threshold),
         )
+    }
+
+    @Test
+    fun `variant tokens match python sentencepiece for the respelled phrase`() {
+        // spm.encode("HEY BUDDEY") etc.; the phrase and its tag stay the user's.
+        val keyword = encoder.encode("hey buddy")
+        assertEquals("HEY_BUDDY", keyword.tag)
+        assertEquals(
+            listOf("▁HE Y ▁BU D DE Y", "▁HE Y ▁BU D DI E", "▁HE Y ▁BU D DI", "▁HE Y B U D D Y", "▁HE ▁BU D D Y"),
+            keyword.variants.map { it.joinToString(" ") },
+        )
+        assertEquals(
+            listOf("▁HE LL O CO M P U TER"),
+            encoder.encode("Hello Computer").variants.map { it.joinToString(" ") },
+        )
+        assertEquals(
+            listOf(
+                "▁WHAT ' S ▁UP ▁WA K Y", "▁WHAT ' S ▁UP ▁WA K I E", "▁WHAT ' S ▁UP ▁WA K I",
+                "▁WHAT ' S U P ▁WA KE Y", "▁WHAT ' S ▁UP W A KE Y",
+            ),
+            encoder.encode("what's up wakey").variants.map { it.joinToString(" ") },
+        )
+    }
+
+    @Test
+    fun `variants use only tokens from tokens txt`() {
+        val limited = KeywordEncoder(modelBytes, tokens - "DI")
+        val variants = limited.encode("hey buddy").variants.map { it.joinToString(" ") }
+        assertEquals(listOf("▁HE Y ▁BU D DE Y", "▁HE Y B U D D Y", "▁HE ▁BU D D Y"), variants)
     }
 
     @Test

@@ -31,7 +31,7 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
     override fun setKeyword(keyword: EncodedKeyword, sensitivity: Float) {
         val scoring = scoringFor(sensitivity)
         this.keyword = keyword
-        keywordLine = keyword.toSherpaLine(scoring.boost, scoring.threshold)
+        keywordLine = keyword.toSherpaKeywords(scoring.boost, scoring.threshold)
         restart()
     }
 
@@ -75,10 +75,8 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
     private fun toDetection(result: KeywordSpotterResult): WakeDetection {
         val span = KeywordTiming.locate(result.timestamps, decodedChunks, TRAILING_BLANKS)
             ?.takeIf { it.endSample <= samplesAccepted }
-        val current = keyword
-        val phrase = if (current != null && result.keyword == current.tag) current.phrase else result.keyword.replace('_', ' ')
         return WakeDetection(
-            phrase = phrase,
+            phrase = reportedPhrase(result.keyword, keyword),
             keywordStartLag = span?.let { samplesAccepted - it.startSample },
             keywordEndLag = span?.let { samplesAccepted - it.endSample },
         )
@@ -102,6 +100,10 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
          * keep triggering after the user changes the wake phrase.
          */
         private const val KEYWORDS_FILE = "wake/empty_keywords.txt"
+
+        /** The user's phrase for a detected [tag]; every pronunciation variant carries the phrase's tag. */
+        internal fun reportedPhrase(tag: String, keyword: EncodedKeyword?): String =
+            if (keyword != null && tag == keyword.tag) keyword.phrase else tag.replace('_', ' ')
 
         /**
          * Maps the user's sensitivity (0 = fewest false wakes, 1 = most eager) to keyword scoring.

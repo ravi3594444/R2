@@ -36,6 +36,9 @@ data class WakeEvent(
  * orchestrator strips the phrase from the transcript). [startCommandStream] flushes that held audio
  * into the sink first. Detection pauses while audio is held or streamed.
  *
+ * If the microphone fails while open (e.g. the audio server restarted after a phone call), the engine
+ * reopens it in the background with growing delays and reports a lasting failure in [micProblem].
+ *
  * Public methods are meant for the main thread and are thread-safe. The wake callback and the sink
  * run on the audio thread.
  */
@@ -47,6 +50,14 @@ class AudioEngine(private val context: Context) {
 
     private val _wakeListening = MutableStateFlow(false)
     val wakeListening: StateFlow<Boolean> = _wakeListening.asStateFlow()
+
+    private val _micProblem = MutableStateFlow<String?>(null)
+
+    /**
+     * Why the open microphone delivers no audio, as a message for the user, or null. While it is set
+     * the engine keeps reopening the microphone; it clears once audio flows again or the mic closes.
+     */
+    val micProblem: StateFlow<String?> = _micProblem.asStateFlow()
 
     private val router = CaptureRouter(SystemClock::elapsedRealtime) { message, error -> Log.w(TAG, message, error) }
     private var encoder: KeywordEncoder? = null
@@ -113,23 +124,51 @@ class AudioEngine(private val context: Context) {
 
     private fun encoder(): KeywordEncoder = encoder ?: KeywordEncoder.fromAssets(context).also { encoder = it }
 
-    // RECORD_AUDIO is checked explicitly before the AudioRecord is created.
-    @SuppressLint("MissingPermission")
     private fun openMic() {
-        if (capture?.isAlive == true) return
+        capture?.let {
+            if (it.isAlive) {
+                // It may be waiting to reopen a failed mic; audio is wanted now, so retry now.
+                it.retryNow()
+                return
+            }
+        }
         closeMic()
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            throw IllegalStateException("Wakey doesn't have microphone permission. Allow it in Settings › Apps › Wakey › Permissions.")
+            throw IllegalStateException(MIC_PERMISSION)
         }
+        capture = Capture(openRecord())
+        router.onMicOpened()
+    }
+
+    /**
+     * Starts a new AudioRecord: VOICE_RECOGNITION (tuned for speech recognition), or MIC on devices
+     * that can't provide it. Runs on the main thread for the first open and on the capture thread
+     * when recovering.
+     * @throws IllegalStateException with a readable message.
+     */
+    private fun openRecord(): MicInput {
         val minBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBytes <= 0) throw IllegalStateException("This device can't record 16 kHz mono audio.")
+        val bufferBytes = maxOf(minBytes * 2, RECORD_BUFFER_BYTES)
+        var failure: IllegalStateException? = null
+        for (source in AUDIO_SOURCES) {
+            try {
+                return AudioRecordInput(startRecord(source, bufferBytes))
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Audio source $source unavailable", e)
+                failure = e
+            } catch (e: SecurityException) {
+                throw IllegalStateException(MIC_PERMISSION, e)
+            }
+        }
+        throw checkNotNull(failure)
+    }
+
+    // RECORD_AUDIO is checked before the first open; if it is revoked later this throws SecurityException.
+    @SuppressLint("MissingPermission")
+    private fun startRecord(source: Int, bufferBytes: Int): AudioRecord {
         val record = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBytes * 2, RECORD_BUFFER_BYTES),
-            )
-        } catch (e: SecurityException) {
-            throw IllegalStateException("Wakey doesn't have microphone permission.", e)
+            AudioRecord(source, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferBytes)
         } catch (e: IllegalArgumentException) {
             throw IllegalStateException("Could not configure the microphone.", e)
         }
@@ -147,8 +186,7 @@ class AudioEngine(private val context: Context) {
             record.release()
             throw IllegalStateException("The microphone is busy. Close other apps that are recording and try again.")
         }
-        capture = Capture(record)
-        router.onMicOpened()
+        return record
     }
 
     private fun closeMicIfUnused() {
@@ -159,48 +197,60 @@ class AudioEngine(private val context: Context) {
         capture?.stop()
         capture = null
         _level.value = 0f
+        _micProblem.value = null
     }
 
-    /** One AudioRecord session and its capture thread. */
-    private inner class Capture(private val record: AudioRecord) {
-        @Volatile
-        private var running = true
-        private val thread = Thread(::captureLoop, "wakey-audio").apply { start() }
+    private class AudioRecordInput(private val record: AudioRecord) : MicInput {
+        override fun read(buffer: ShortArray): Int = record.read(buffer, 0, buffer.size)
 
-        val isAlive: Boolean get() = running && thread.isAlive
-
-        fun stop() {
-            running = false
+        override fun stop() {
             try {
-                record.stop() // Unblocks a pending read().
+                record.stop()
             } catch (e: IllegalStateException) {
                 Log.w(TAG, "AudioRecord.stop failed", e)
             }
-            thread.join(JOIN_TIMEOUT_MS)
-            record.release()
         }
 
-        private fun captureLoop() {
+        override fun release() = record.release()
+    }
+
+    /** The capture thread: reads the mic, and reopens it after failures, until [stop]. */
+    private inner class Capture(first: MicInput) {
+        private val meter = LevelMeter()
+        private val loop = CaptureLoop(
+            blockSamples = BLOCK_SAMPLES,
+            open = ::openRecord,
+            onAudio = { buffer, count ->
+                val readAt = SystemClock.elapsedRealtime()
+                meter.add(buffer, count)?.let { _level.value = it }
+                router.onAudio(buffer, count, readAt)
+            },
+            onReopened = router::onMicOpened,
+            onProblem = { problem ->
+                _micProblem.value = problem
+                if (problem != null) _level.value = 0f
+            },
+            warn = { message, error -> Log.w(TAG, message, error) },
+        )
+        private val thread = Thread({ captureThread(first) }, "wakey-audio").apply { start() }
+
+        val isAlive: Boolean get() = loop.isRunning && thread.isAlive
+
+        fun retryNow() = loop.retryNow()
+
+        /** The capture thread releases the AudioRecord itself once its read has returned. */
+        fun stop() {
+            loop.stop()
+            thread.join(JOIN_TIMEOUT_MS)
+        }
+
+        private fun captureThread(first: MicInput) {
             try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             } catch (e: SecurityException) {
                 Log.w(TAG, "Could not raise the capture thread priority", e)
             }
-            val buffer = ShortArray(BLOCK_SAMPLES)
-            val meter = LevelMeter()
-            while (running) {
-                val read = record.read(buffer, 0, buffer.size)
-                if (read < 0) {
-                    Log.e(TAG, "Microphone read failed ($read); capture stopped")
-                    break
-                }
-                if (read == 0) continue
-                val readAt = SystemClock.elapsedRealtime()
-                meter.add(buffer, read)?.let { _level.value = it }
-                router.onAudio(buffer, read, readAt)
-            }
-            running = false
-            _level.value = 0f
+            loop.run(first)
         }
     }
 
@@ -210,9 +260,15 @@ class AudioEngine(private val context: Context) {
         /** 20 ms reads keep detection latency low without waking the CPU too often. */
         private const val BLOCK_SAMPLES = 320
 
-        /** 320 ms, so a slow decode on the capture thread (one per 320 ms chunk) can't overrun it. */
-        private const val RECORD_BUFFER_BYTES = SAMPLE_RATE * 2 * 320 / 1000
+        /**
+         * 1 s. Wake detection decodes on the capture thread, a 320 ms chunk at a time (about 12 ms on
+         * a desktop core), so the buffer absorbs a decode many times slower on a low-end phone.
+         */
+        private const val RECORD_BUFFER_BYTES = SAMPLE_RATE * 2
         private const val JOIN_TIMEOUT_MS = 1_000L
         private const val TAG = "WakeyAudio"
+        private const val MIC_PERMISSION =
+            "Wakey doesn't have microphone permission. Allow it in Settings › Apps › Wakey › Permissions."
+        private val AUDIO_SOURCES = intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC)
     }
 }
