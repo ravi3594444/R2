@@ -206,12 +206,6 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         false
     }
 
-    override fun showStatus(text: String, onStop: () -> Unit) = overlay.show(text, onStop)
-
-    override fun hideStatus() {
-        if (overlayHolder.isInitialized()) overlay.hide()
-    }
-
     private sealed interface Resolution {
         class Found(val element: ParsedElement, val node: AccessibilityNodeInfo) : Resolution
         class Missing(val message: String) : Resolution

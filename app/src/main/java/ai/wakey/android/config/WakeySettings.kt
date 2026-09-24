@@ -32,6 +32,8 @@ data class WakeySettings(
     val llmModel: String = DEFAULT_LLM_MODEL,
     val maxAgentSteps: Int = DEFAULT_MAX_STEPS,
     val onboardingDone: Boolean = false,
+    /** Show the floating Wakey button over other apps (needs Wakey screen control). */
+    val floatingButton: Boolean = false,
 ) {
     companion object {
         const val DEFAULT_WAKE_PHRASE = "Hey Wakey"

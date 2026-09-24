@@ -35,10 +35,6 @@ interface ScreenController {
 
     /** Starts an activity from the accessibility service context (allowed while Wakey is in the background). */
     fun launch(intent: Intent): Boolean
-
-    /** Small always-on-top pill showing the current agent action with a Stop button. */
-    fun showStatus(text: String, onStop: () -> Unit)
-    fun hideStatus()
 }
 
 data class ElementTarget(val id: Int? = null, val label: String? = null)

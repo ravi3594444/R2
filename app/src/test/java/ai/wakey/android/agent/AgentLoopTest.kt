@@ -57,8 +57,6 @@ class AgentLoopTest {
         )
         assertEquals(listOf("Opening Settings", "Opening Settings", "Tapping “Bluetooth”", "Tapping “Bluetooth”"), listener.actions.map { it.description })
         assertEquals(listOf(1, 1, 2, 2), listener.actions.map { it.step })
-        assertEquals(listOf("Looking at the screen", "Opening Settings", "Tapping “Bluetooth”"), screen.statuses)
-        assertEquals(1, screen.statusHidden)
 
         // The first model request already carries the opened Settings screen as the open_app result.
         val first = model.requests[0]
@@ -126,7 +124,6 @@ class AgentLoopTest {
         assertTrue(job.isCancelled)
         assertEquals(listOf("tap Bluetooth"), screen.log)
         assertEquals(1, model.requests.size)
-        assertEquals(1, screen.statusHidden)
     }
 
     @Test
@@ -147,7 +144,6 @@ class AgentLoopTest {
         job.join()
 
         assertEquals(listOf("tap Bluetooth"), screen.log)
-        assertEquals(1, screen.statusHidden)
     }
 
     @Test
@@ -240,7 +236,7 @@ class AgentLoopTest {
         val result = agentLoop(model, null, apps).run("open Chrome and search for cats", RecordingListener())
 
         assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(listOf("open_app", "finish", "ask_user"), model.requests[0].tools.map { it.name })
+        assertEquals(listOf("open_app", "finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
         assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("Screen control is off"))
         assertEquals("Request: open Chrome and search for cats\nReply language: English", (model.requests[0].messages.last() as ChatMessage.User).text)
         assertTrue((model.requests[1].messages.last() as ChatMessage.Tool).content.contains("can't be checked"))
@@ -255,9 +251,8 @@ class AgentLoopTest {
         val result = agentLoop(model, screen).run("open WhatsApp and message mom", RecordingListener())
 
         assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(listOf("finish", "ask_user"), model.requests[0].tools.map { it.name })
+        assertEquals(listOf("finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
         assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("The phone is locked"))
-        assertTrue(screen.statuses.isEmpty())
     }
 
     @Test
@@ -306,7 +301,6 @@ class AgentLoopTest {
         val result = agentLoop(model, screen, timeoutMs = 120_000).run("open bluetooth", RecordingListener())
 
         assertEquals(AgentStatus.Timeout, result.status)
-        assertEquals(1, screen.statusHidden)
     }
 
     @Test
@@ -340,13 +334,44 @@ class AgentLoopTest {
     }
 
     @Test
-    fun statusPillStopButtonCallsTheStopCallback() = runTest {
-        var stopped = false
-        val screen = FakeScreen(settingsMain)
-        agentLoop(ScriptedModel.of(textReply("Hi.")), screen, onStop = { stopped = true }).run("hello", RecordingListener())
-        screen.lastStop?.invoke()
-        assertTrue(stopped)
-        assertFalse(screen.statuses.isEmpty())
+    fun scheduleToolSchedulesThroughTheListener() = runTest {
+        val model = ScriptedModel.of(
+            toolCall("schedule_task", """{"task":"text dad I'm on my way","when":"at 6 pm","kind":"task"}"""),
+            toolCall("finish", """{"reply":"I'll text your dad at 6 PM."}"""),
+        )
+        val listener = RecordingListener()
+        val result = agentLoop(model, FakeScreen(launcher)).run("text dad at 6 that I'm on my way", listener)
+
+        assertEquals(AgentStatus.Completed, result.status)
+        val scheduled = listener.scheduled.single()
+        assertEquals("text dad I'm on my way", scheduled.text)
+        assertEquals(FIXED_NOW.withHour(18), scheduled.at)
+        val toolResult = model.requests[1].messages.last() as ChatMessage.Tool
+        assertEquals("OK: Scheduled text dad I'm on my way.", toolResult.content)
+        assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("Current time: Thursday 24 September 2026, 2 PM"))
+        assertEquals(listOf("Scheduling “text dad I'm on my way”"), listener.actions.filter { it.result == null }.map { it.description })
+    }
+
+    @Test
+    fun unreadableScheduleTimeIsAnErrorForTheModel() = runTest {
+        val model = ScriptedModel.of(
+            toolCall("schedule_task", """{"task":"call mum","when":"soonish"}"""),
+            toolCall("finish", """{"reply":"When should I call her?"}"""),
+        )
+        val listener = RecordingListener()
+        agentLoop(model, FakeScreen(launcher)).run("call mum later", listener)
+        assertTrue(listener.scheduled.isEmpty())
+        assertTrue((model.requests[1].messages.last() as ChatMessage.Tool).content.startsWith("FAILED: “soonish” isn't a future time."))
+    }
+
+    @Test
+    fun deferredRunsCannotScheduleAgain() = runTest {
+        val model = ScriptedModel.of(toolCall("finish", """{"reply":"Calling."}"""))
+        agentLoop(model, FakeScreen(launcher)).run("call mum", RecordingListener(), deferred = true)
+        val first = model.requests[0]
+        assertFalse(first.tools.any { it.name == "schedule_task" })
+        assertFalse((first.messages[0] as ChatMessage.System).text.contains("schedule_task"))
+        assertTrue(first.messages.any { it is ChatMessage.User && it.text.contains("asked for this earlier") })
     }
 
     @Test

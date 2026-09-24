@@ -10,6 +10,9 @@ import ai.wakey.android.core.AssistantController
 import ai.wakey.android.llm.OpenAiCompatibleChatModel
 import ai.wakey.android.service.Notifications
 import ai.wakey.android.stt.DeepgramFluxStt
+import ai.wakey.android.tasks.AlarmWakeups
+import ai.wakey.android.tasks.FileTaskStore
+import ai.wakey.android.tasks.TaskHarness
 import ai.wakey.android.tts.AndroidSpeaker
 import ai.wakey.android.tts.DeepgramSpeaker
 import ai.wakey.android.tts.RoutingSpeaker
@@ -18,6 +21,7 @@ import android.app.Application
 import android.content.Context
 import android.os.Bundle
 import okhttp3.OkHttpClient
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class WakeyApp : Application() {
@@ -87,6 +91,8 @@ class AppGraph(context: Context) {
     )
     val device = DeviceActions(appContext, screen = { WakeyAccessibilityService.controller })
     val agent = AgentLoop(chatModel, device, { WakeyAccessibilityService.controller }) { settings.current }
+    val taskAlarms = AlarmWakeups(appContext)
+    val tasks = TaskHarness(FileTaskStore(File(appContext.filesDir, "tasks.json")), taskAlarms).apply { load() }
 
     val controller = AssistantController(
         appContext = appContext,
@@ -99,5 +105,6 @@ class AppGraph(context: Context) {
         device = device,
         agent = agent,
         notifications = notifications,
+        harness = tasks,
     )
 }

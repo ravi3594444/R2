@@ -1,6 +1,7 @@
 package ai.wakey.android.agent
 
 import ai.wakey.android.core.AgentActionInfo
+import ai.wakey.android.tasks.TaskRequest
 
 /** A simple command handled directly on Android with no LLM call. */
 sealed interface FastCommand {
@@ -44,4 +45,10 @@ interface AgentListener {
 
     /** Previous turns, oldest first, as (role, text) with role "user" or "assistant". */
     fun history(): List<Pair<String, String>> = emptyList()
+
+    /**
+     * Schedules [request] (the model called schedule_task) and returns a short outcome for the
+     * model, e.g. "Scheduled call mum at 4 PM."
+     */
+    fun schedule(request: TaskRequest.Scheduled): String = "Scheduling isn't available."
 }

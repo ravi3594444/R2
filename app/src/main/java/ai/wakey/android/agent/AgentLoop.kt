@@ -1,6 +1,5 @@
 package ai.wakey.android.agent
 
-import ai.wakey.android.WakeyApp
 import ai.wakey.android.accessibility.ScreenController
 import ai.wakey.android.accessibility.ScreenObservation
 import ai.wakey.android.config.WakeySettings
@@ -10,6 +9,7 @@ import ai.wakey.android.llm.ChatModel
 import ai.wakey.android.llm.ChatRequest
 import ai.wakey.android.llm.LlmException
 import ai.wakey.android.llm.ToolCall
+import ai.wakey.android.tasks.TaskParser
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +19,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.time.ZonedDateTime
 
 /** What the agent needs from [DeviceActions], as an interface so the loop can be tested off-device. */
 internal interface AppLauncher {
@@ -28,7 +29,9 @@ internal interface AppLauncher {
 
 /**
  * Bounded observe → decide → act → verify loop over the Accessibility UI tree, with a screenshot
- * fallback. Cancellation of the calling coroutine stops it before the next action.
+ * fallback, plus scheduling work for later. Cancellation of the calling coroutine stops it before
+ * the next action. Progress is reported through [AgentListener.onAction]; the UI and the on-screen
+ * status pill are drawn from that.
  *
  * Each step sends the system prompt, recent conversation, the request and the latest screen to the
  * model, validates the single tool call it returns, asks the user before consequential actions,
@@ -42,7 +45,8 @@ class AgentLoop internal constructor(
     private val settings: () -> WakeySettings,
     private val clock: () -> Long,
     private val timeoutMs: Long,
-    private val onStopRequested: () -> Unit,
+    /** Wall-clock time, for the prompt and for scheduling. */
+    private val now: () -> ZonedDateTime,
 ) {
     constructor(
         model: ChatModel,
@@ -59,22 +63,21 @@ class AgentLoop internal constructor(
         settings = settings,
         clock = SystemClock::elapsedRealtime,
         timeoutMs = TIMEOUT_MS,
-        onStopRequested = { WakeyApp.graph.controller.stop() },
+        now = ZonedDateTime::now,
     )
 
-    /** Works towards [goal] until the model finishes or asks, or a step, time or safety limit stops it. */
-    suspend fun run(goal: String, listener: AgentListener): AgentResult {
+    /**
+     * Works towards [goal] until the model finishes or asks, or a step, time or safety limit stops it.
+     * A [deferred] goal was queued or scheduled earlier and is due now; it can't be scheduled again.
+     */
+    suspend fun run(goal: String, listener: AgentListener, deferred: Boolean = false): AgentResult {
         val maxSteps = settings().maxAgentSteps.coerceIn(1, WakeySettings.MAX_AGENT_STEPS_LIMIT)
-        val session = Session(goal.trim(), listener, maxSteps)
-        return try {
-            withTimeoutOrNull(timeoutMs) { session.run() }
-                ?: session.result(AgentStatus.Timeout, session.replies.timeout())
-        } finally {
-            screen()?.hideStatus()
-        }
+        val session = Session(goal.trim(), listener, maxSteps, deferred)
+        return withTimeoutOrNull(timeoutMs) { session.run() }
+            ?: session.result(AgentStatus.Timeout, session.replies.timeout())
     }
 
-    private inner class Session(val goal: String, val listener: AgentListener, val maxSteps: Int) {
+    private inner class Session(val goal: String, val listener: AgentListener, val maxSteps: Int, val deferred: Boolean) {
         val replies = AgentPrompt.Replies.forGoal(goal)
         private val messages = mutableListOf<ChatMessage>()
         private var access = ScreenAccess.Unavailable
@@ -106,16 +109,15 @@ class AgentLoop internal constructor(
                 controller.isLocked -> ScreenAccess.Locked
                 else -> ScreenAccess.Available
             }
-            val allowed = AgentTools.allowed(access)
-            val tools = AgentTools.specsFor(access)
-            if (access == ScreenAccess.Available) controller?.showStatus(LOOKING_STATUS, onStopRequested)
+            val allowed = AgentTools.allowed(access, canSchedule = !deferred)
+            val tools = AgentTools.specsFor(access, canSchedule = !deferred)
 
-            messages += ChatMessage.System(AgentPrompt.system(access, apps.labels()))
+            messages += ChatMessage.System(AgentPrompt.system(access, apps.labels(), now(), canSchedule = !deferred))
             listener.history().takeLast(MAX_HISTORY).forEach { (role, text) ->
                 val clipped = text.take(MAX_HISTORY_CHARS)
                 messages += if (role == "user") ChatMessage.User(clipped) else ChatMessage.Assistant(clipped)
             }
-            val request = AgentPrompt.request(goal)
+            val request = AgentPrompt.request(goal, deferred)
             observation = controller?.takeIf { access == ScreenAccess.Available }?.let { read(it) }
             val first = observation
             if (first != null) {
@@ -177,11 +179,25 @@ class AgentLoop internal constructor(
                     messages += ChatMessage.Tool(call.id, call.name, correction)
                 }
                 is AgentAction.AskUser -> return result(AgentStatus.NeedsUser, action.question)
+                is AgentAction.Schedule -> schedule(action, call)
                 AgentAction.ReadScreen -> readScreen(call)
                 AgentAction.TakeScreenshot -> takeScreenshot(call)
                 is AgentAction.ScreenChanging -> return act(action, call)
             }
             return null
+        }
+
+        private fun schedule(action: AgentAction.Schedule, call: ToolCall) {
+            val name = action.task.ifBlank { action.kind.label }
+            val info = started(call, "Scheduling “${name.take(40)}${if (name.length > 40) "…" else ""}”")
+            val request = TaskParser.scheduleAt(action.task, action.whenText, action.kind, now())
+            val outcome = if (request == null) {
+                ActionOutcome(false, "“${action.whenText}” isn't a future time. Use e.g. \"at 4:30 pm\", \"tomorrow at 9 am\" or \"in 20 minutes\".")
+            } else {
+                ActionOutcome(true, listener.schedule(request))
+            }
+            listener.onAction(info.copy(result = outcome.message, success = outcome.success))
+            messages += ChatMessage.Tool(call.id, call.name, outcomeLine(outcome))
         }
 
         private suspend fun readScreen(call: ToolCall) {
@@ -267,7 +283,6 @@ class AgentLoop internal constructor(
         private fun started(call: ToolCall, description: String): AgentActionInfo {
             val info = AgentActionInfo(steps, maxSteps, description, call.name)
             listener.onAction(info)
-            screen()?.showStatus(description, onStopRequested)
             return info
         }
 
@@ -353,7 +368,6 @@ class AgentLoop internal constructor(
         const val MAX_UNCHANGED = 3
         const val MAX_HISTORY = 6
         const val MAX_HISTORY_CHARS = 500
-        const val LOOKING_STATUS = "Looking at the screen"
         const val OPENING_CALL_ID = "wakey_open_app"
         /** A tool call needs well under this; it also stops a runaway reply from adding latency. */
         const val MAX_COMPLETION_TOKENS = 400

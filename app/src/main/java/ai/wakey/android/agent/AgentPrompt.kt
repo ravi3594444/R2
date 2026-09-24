@@ -3,11 +3,19 @@ package ai.wakey.android.agent
 import ai.wakey.android.BuildConfig
 import ai.wakey.android.accessibility.ScreenObservation
 import ai.wakey.android.llm.LlmException
+import ai.wakey.android.tasks.TaskTime
+import java.time.ZonedDateTime
+import java.time.format.TextStyle
+import java.util.Locale
 
 /** The agent's system prompt, the screen text the model sees, and its canned spoken replies. */
 internal object AgentPrompt {
 
-    fun system(access: ScreenAccess, appLabels: List<String>): String = buildString {
+    /**
+     * [now] adds the current time, which scheduling needs; [canSchedule] is false for scheduled runs,
+     * which must not schedule themselves again.
+     */
+    fun system(access: ScreenAccess, appLabels: List<String>, now: ZonedDateTime? = null, canSchedule: Boolean = true): String = buildString {
         appendLine("You are Wakey, a voice assistant that carries out the user's request on their Android phone by calling tools.")
         appendLine("- Call exactly one tool per turn.")
         when (access) {
@@ -33,6 +41,9 @@ internal object AgentPrompt {
                     "ask the user to unlock it first. Never try to bypass the lock screen.",
             )
         }
+        if (canSchedule) {
+            appendLine("- If the user wants something done later (at a time or after a delay), call schedule_task once instead of doing it now, then finish. If they want it later but gave no time, ask_user when.")
+        }
         appendLine("- If the request needs no phone action (a question, small talk), answer with finish.")
         appendLine("- Use ask_user only if the request is ambiguous or needs information only the user has.")
         appendLine("- finish and ask_user text is spoken: at most 2 short sentences, no markdown, in the reply language given with the request.")
@@ -42,10 +53,23 @@ internal object AgentPrompt {
             if (appLabels.size > shown.size) append(", …")
             appendLine()
         }
+        if (now != null) appendLine("Current time: ${currentTime(now)}")
     }.trimEnd()
 
-    /** The user's turn: the request plus the language to reply in, decided here rather than by the model. */
-    fun request(goal: String): String = "Request: $goal\nReply language: ${ReplyLanguage.of(goal).instruction}"
+    /**
+     * The user's turn: the request plus the language to reply in, decided here rather than by the model.
+     * A [deferred] request was queued or scheduled earlier and is due now.
+     */
+    fun request(goal: String, deferred: Boolean = false): String = buildString {
+        append("Request: ").append(goal)
+        if (deferred) append("\n(The user asked for this earlier, to be done now. Do it now; don't schedule it again.)")
+        append("\nReply language: ").append(ReplyLanguage.of(goal).instruction)
+    }
+
+    /** "Thursday 24 September 2026, 2:05 PM". */
+    fun currentTime(now: ZonedDateTime): String =
+        "${now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.ENGLISH)} ${now.dayOfMonth} " +
+            "${now.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH)} ${now.year}, ${TaskTime.clock(now)}"
 
     /** The screen as the model sees it: foreground app, element list and any warnings. */
     fun screen(observation: ScreenObservation): String = buildString {

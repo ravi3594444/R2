@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Scheduled tasks, reminders and alarms ("call mum at 4", "ring me at 5") must fire on time. -->
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- Re-arms task alarms after a reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Only used as a fallback if a device refuses torch control without it. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
@@ -53,9 +60,30 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
+        <service
+            android:name=".service.TaskRunService"
+            android:exported="false"
+            android:foregroundServiceType="shortService" />
+
         <receiver
             android:name=".service.NotificationActionReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".tasks.TaskAlarmReceiver"
+            android:exported="false" />
+
+        <!-- System broadcasts only (protected, so no other app can send them). -->
+        <receiver
+            android:name=".tasks.TaskRestoreReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".WakeyAccessibilityService"

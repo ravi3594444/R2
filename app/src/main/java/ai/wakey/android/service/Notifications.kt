@@ -3,6 +3,8 @@ package ai.wakey.android.service
 import ai.wakey.android.R
 import ai.wakey.android.WakeyApp
 import ai.wakey.android.core.AssistantUiState
+import ai.wakey.android.tasks.TaskBoard
+import ai.wakey.android.tasks.WakeyTask
 import ai.wakey.android.ui.MainActivity
 import android.Manifest
 import android.app.Notification
@@ -11,21 +13,25 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
 /**
- * Notification channels, the persistent listening notification (with Stop and Turn off), and
- * heads-up confirmation prompts with Approve / Deny actions for when Wakey is behind another app.
+ * Notification channels, the persistent listening notification (with Stop and Turn off), heads-up
+ * confirmation prompts with Approve / Deny actions for when Wakey is behind another app, and task
+ * notifications: reminders, ringing alarms, scheduled tasks that need the phone unlocked, missed
+ * tasks, and the results of tasks that ran on their own.
  *
- * Both notifications are private on a secure lock screen: the public version shows only the
- * phase, never speech, replies or the pending question. Call from the main thread only.
+ * Everything is private on a secure lock screen: the public version never shows speech, replies,
+ * reminder text or the pending question. Call from the main thread only.
  *
  * @param wakePhrase read each time the listening notification is built.
  */
@@ -55,13 +61,13 @@ class Notifications(
         if (WakeService.isRunning) postListening(content)
     }
 
-    /** Creates the "listening" (quiet, persistent) and "confirm" (heads-up) channels. Idempotent. */
+    /** Creates Wakey's channels. Idempotent. */
     fun ensureChannels() {
         manager.createNotificationChannelsCompat(
             listOf(
                 NotificationChannelCompat.Builder(CHANNEL_LISTENING, NotificationManagerCompat.IMPORTANCE_LOW)
                     .setName("Listening")
-                    .setDescription("Shown while Wakey listens for the wake word, with Stop and Turn off buttons.")
+                    .setDescription("Shown while Wakey listens for the wake word or keeps the floating button ready, with Stop and Turn off.")
                     .setShowBadge(false)
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_CONFIRM, NotificationManagerCompat.IMPORTANCE_HIGH)
@@ -70,6 +76,29 @@ class Notifications(
                     // Wakey usually speaks the question aloud; a chime would talk over it.
                     .setSound(null, null)
                     .setVibrationEnabled(true)
+                    .build(),
+                NotificationChannelCompat.Builder(CHANNEL_REMINDERS, NotificationManagerCompat.IMPORTANCE_HIGH)
+                    .setName("Reminders and scheduled tasks")
+                    .setDescription("Reminders you asked for, and scheduled tasks that need you or didn't run.")
+                    .setVibrationEnabled(true)
+                    .build(),
+                NotificationChannelCompat.Builder(CHANNEL_ALARMS, NotificationManagerCompat.IMPORTANCE_HIGH)
+                    .setName("Alarms and timers")
+                    .setDescription("Alarms and timers set with Wakey. They ring until you stop or snooze them.")
+                    .setSound(
+                        Settings.System.DEFAULT_ALARM_ALERT_URI,
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    .setVibrationEnabled(true)
+                    .setVibrationPattern(longArrayOf(0, 700, 500, 700))
+                    .build(),
+                NotificationChannelCompat.Builder(CHANNEL_TASKS, NotificationManagerCompat.IMPORTANCE_LOW)
+                    .setName("Running tasks")
+                    .setDescription("Shown while Wakey runs a scheduled task in the background, with Stop.")
+                    .setShowBadge(false)
                     .build(),
             ),
         )
@@ -80,7 +109,7 @@ class Notifications(
      * posts it immediately, so it also becomes the baseline [updateListening] compares against.
      */
     fun buildListening(state: AssistantUiState): Notification {
-        val content = listeningContent(state, wakePhrase())
+        val content = listeningContent(state, wakePhrase(), state.wakeWordEnabled)
         dropPending()
         markShown(content)
         return listeningNotification(content)
@@ -94,7 +123,7 @@ class Notifications(
      */
     fun updateListening(state: AssistantUiState) {
         if (!WakeService.isRunning) return
-        val content = listeningContent(state, wakePhrase())
+        val content = listeningContent(state, wakePhrase(), state.wakeWordEnabled)
         if (content == shown) {
             dropPending()
             return
@@ -138,6 +167,132 @@ class Notifications(
 
     /** Removes the prompt for confirmation [id], whichever way it was answered. */
     fun cancelConfirmation(id: Long) = manager.cancel(confirmationTag(id), CONFIRM_ID)
+
+    // ------------------------------------------------------------------ tasks
+
+    /** A reminder's time came: its text, with Snooze and Done. */
+    fun showReminder(task: WakeyTask, text: String) {
+        val notification = taskBuilder(CHANNEL_REMINDERS, "Wakey reminder")
+            .setContentTitle(text)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .addAction(0, "Snooze 10 min", taskIntent(task.id, TaskAction.Snooze))
+            .addAction(0, "Done", taskIntent(task.id, TaskAction.Dismiss))
+            .build()
+        notify(taskTag(task.id), TASK_ID, notification)
+    }
+
+    /** Rings until stopped, snoozed, opened or [ALARM_RING_MS] passes. */
+    fun showAlarm(task: WakeyTask, title: String, time: String) {
+        val notification = taskBuilder(CHANNEL_ALARMS, "Wakey alarm · $time")
+            .setContentTitle(title)
+            .setContentText(time)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setTimeoutAfter(ALARM_RING_MS)
+            .setOnlyAlertOnce(false)
+            .addAction(0, "Stop", taskIntent(task.id, TaskAction.Dismiss))
+            .addAction(0, "Snooze 10 min", taskIntent(task.id, TaskAction.Snooze))
+            .build()
+        notification.flags = notification.flags or Notification.FLAG_INSISTENT
+        notify(taskTag(task.id), TASK_ID, notification)
+    }
+
+    /** A scheduled task is due but the phone is locked. Run now requires unlocking. */
+    fun showTaskWaiting(task: WakeyTask, text: String) {
+        val notification = taskBuilder(CHANNEL_REMINDERS, "Wakey has a task for you")
+            .setContentTitle(text)
+            .setContentText("Unlock your phone and Wakey will do it.")
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .addAction(runNowAction(task.id))
+            .addAction(0, "Snooze 10 min", taskIntent(task.id, TaskAction.Snooze))
+            .addAction(0, "Cancel", taskIntent(task.id, TaskAction.Cancel))
+            .build()
+        notify(taskTag(task.id), TASK_ID, notification)
+    }
+
+    /** A scheduled task that didn't run in time. */
+    fun showTaskMissed(task: WakeyTask, text: String, reason: String) {
+        val notification = taskBuilder(CHANNEL_REMINDERS, "Wakey missed a task")
+            .setContentTitle(text)
+            .setContentText(reason)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(reason))
+            .addAction(runNowAction(task.id))
+            .build()
+        notify(taskTag(task.id), TASK_ID, notification)
+    }
+
+    /** What happened with a task that ran on its own, for when the spoken reply wasn't heard. */
+    fun showTaskResult(task: WakeyTask, reply: String, failed: Boolean) {
+        val notification = taskBuilder(CHANNEL_REMINDERS, if (failed) "A Wakey task didn't finish" else "Wakey finished a task")
+            .setContentTitle(clip(task.title, MAX_TITLE_CHARS))
+            .setContentText(reply)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(reply))
+            .setSilent(!failed)
+            .apply { if (failed) addAction(runNowAction(task.id, label = "Try again")) }
+            .build()
+        notify(taskTag(task.id), TASK_ID, notification)
+    }
+
+    fun cancelTask(id: Long) = manager.cancel(taskTag(id), TASK_ID)
+
+    /** The notification of [TaskRunService]: which task runs, with Stop. */
+    fun buildTaskRun(board: TaskBoard): Notification {
+        val title = board.running?.title ?: board.upNext.firstOrNull()?.title ?: "Scheduled task"
+        return NotificationCompat.Builder(context, CHANNEL_TASKS)
+            .setSmallIcon(R.drawable.ic_stat_wakey)
+            .setColor(ContextCompat.getColor(context, R.color.wakey_accent))
+            .setContentTitle("Running a scheduled task")
+            .setContentText(clip(title, MAX_TEXT_CHARS))
+            .setContentIntent(openAppIntent)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setOngoing(true)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setLocalOnly(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(context, CHANNEL_TASKS)
+                    .setSmallIcon(R.drawable.ic_stat_wakey)
+                    .setContentTitle("Wakey is running a task")
+                    .build(),
+            )
+            .addAction(0, "Stop", cancelTaskIntent)
+            .build()
+    }
+
+    fun updateTaskRun(board: TaskBoard) = notify(null, TASK_RUN_ID, buildTaskRun(board))
+
+    private fun taskBuilder(channel: String, publicTitle: String) = NotificationCompat.Builder(context, channel)
+        .setSmallIcon(R.drawable.ic_stat_wakey)
+        .setColor(ContextCompat.getColor(context, R.color.wakey_accent))
+        .setContentIntent(openAppIntent)
+        .setAutoCancel(true)
+        .setLocalOnly(true)
+        .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        .setPublicVersion(
+            NotificationCompat.Builder(context, channel)
+                .setSmallIcon(R.drawable.ic_stat_wakey)
+                .setContentTitle(publicTitle)
+                .build(),
+        )
+
+    private fun runNowAction(id: Long, label: String = "Run now") =
+        NotificationCompat.Action.Builder(0, label, taskIntent(id, TaskAction.RunNow))
+            // Running a task operates the phone, so it must not start from a locked screen.
+            .setAuthenticationRequired(true)
+            .build()
+
+    private fun taskIntent(id: Long, action: TaskAction): PendingIntent {
+        val intent = NotificationActionReceiver.intent(context, action.intentAction)
+            .putExtra(NotificationActionReceiver.EXTRA_TASK_ID, id)
+        return PendingIntent.getBroadcast(
+            context, taskRequestCode(id, action), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
+    // ------------------------------------------------------------------ internals
 
     private fun listeningNotification(content: ListeningContent): Notification {
         val publicVersion = listeningBuilder(content.publicTitle).build()
@@ -210,15 +365,30 @@ class Notifications(
         )
     }
 
+    /** Buttons on task notifications, each answered by [NotificationActionReceiver]. */
+    internal enum class TaskAction(val intentAction: String) {
+        RunNow(NotificationActionReceiver.ACTION_TASK_RUN_NOW),
+        Snooze(NotificationActionReceiver.ACTION_TASK_SNOOZE),
+        Cancel(NotificationActionReceiver.ACTION_TASK_CANCEL),
+        Dismiss(NotificationActionReceiver.ACTION_TASK_DISMISS),
+    }
+
     companion object {
         const val LISTENING_ID = 1001
         private const val CONFIRM_ID = 1002
+        private const val TASK_ID = 1003
+        const val TASK_RUN_ID = 1004
         private const val CHANNEL_LISTENING = "listening"
         private const val CHANNEL_CONFIRM = "confirm"
+        private const val CHANNEL_REMINDERS = "reminders"
+        private const val CHANNEL_ALARMS = "alarms"
+        private const val CHANNEL_TASKS = "tasks"
 
         private const val MIN_UPDATE_INTERVAL_MS = 500L
         /** Matches the controller's confirmation timeout, after which the request counts as denied. */
         private const val CONFIRM_TIMEOUT_MS = 60_000L
+        /** An alarm nobody stops rings for this long. */
+        private const val ALARM_RING_MS = 10 * 60_000L
         private const val MAX_DETAIL_CHARS = 1_000
 
         private const val REQUEST_OPEN_APP = 1
@@ -226,6 +396,8 @@ class Notifications(
         private const val REQUEST_TURN_OFF = 3
         private const val REQUEST_CONFIRM_BASE = 1_000
         private const val CONFIRM_CODE_SPAN = 1_000_000L
+        private const val REQUEST_TASK_BASE = 3_000_000
+        private const val TASK_CODE_SPAN = 250_000L
 
         /**
          * A PendingIntent request code unique to each confirmation and answer (extras do not make
@@ -234,7 +406,13 @@ class Notifications(
         internal fun confirmationRequestCode(id: Long, approved: Boolean): Int =
             REQUEST_CONFIRM_BASE + (id.mod(CONFIRM_CODE_SPAN) * 2 + if (approved) 1 else 0).toInt()
 
+        /** Like [confirmationRequestCode], for task buttons; above every confirmation code. */
+        internal fun taskRequestCode(id: Long, action: TaskAction): Int =
+            REQUEST_TASK_BASE + (id.mod(TASK_CODE_SPAN) * TaskAction.entries.size + action.ordinal).toInt()
+
         internal fun confirmationTag(id: Long) = "confirm:$id"
+
+        internal fun taskTag(id: Long) = "task:$id"
 
         /** How long to hold an update so posts stay [intervalMs] apart; 0 means post now. */
         internal fun throttleDelayMs(lastPostAtMs: Long?, nowMs: Long, intervalMs: Long): Long =

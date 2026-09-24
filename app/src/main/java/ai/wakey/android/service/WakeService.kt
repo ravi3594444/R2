@@ -18,8 +18,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Microphone foreground service. Started only from the visible app via [start]. Keeps on-device
- * wake listening alive with the screen off (partial wake lock) and shows the listening
+ * Microphone foreground service. Started only from the visible app via [start] (or the floating
+ * button). It runs while the wake word or the floating button is on: only a running microphone
+ * service may record while Wakey is in the background. Keeps on-device wake listening alive with the
+ * screen off (a partial wake lock, held only while the wake word is on) and shows the listening
  * notification with working Stop and Turn off actions.
  *
  * Not sticky: a system restart would start a microphone service from the background, which
@@ -52,17 +54,21 @@ class WakeService : LifecycleService() {
             shutDown()
             return
         }
-        acquireWakeLock()
         // The controller refreshes the notification on phase changes; this also carries the live
         // transcript and status line. Notifications skips unchanged content.
         val notifications = WakeyApp.graph.notifications
-        lifecycleScope.launch { controller.state.collect { notifications.updateListening(it) } }
+        lifecycleScope.launch {
+            controller.state.collect { state ->
+                notifications.updateListening(state)
+                // The detector must keep running with the screen off; tap-to-talk alone needs no wake lock.
+                if (state.wakeWordEnabled) acquireWakeLock() else releaseWakeLock()
+            }
+        }
     }
 
     override fun onDestroy() {
         isRunning = false
-        wakeLock?.takeIf { it.isHeld }?.release()
-        wakeLock = null
+        releaseWakeLock()
         WakeyApp.graph.controller.onWakeServiceStopped()
         super.onDestroy()
     }
@@ -94,15 +100,21 @@ class WakeService : LifecycleService() {
         stopSelf()
     }
 
-    // Held for exactly as long as the user keeps wake listening on; released in onDestroy.
+    // Held for exactly as long as the wake word is on; released when it goes off and in onDestroy.
     @SuppressLint("WakelockTimeout")
     private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
             .apply {
                 setReferenceCounted(false)
                 acquire()
             }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
     }
 
     companion object {

@@ -13,12 +13,17 @@ internal data class ListeningContent(val title: String, val publicTitle: String,
 internal const val MAX_TITLE_CHARS = 100
 internal const val MAX_TEXT_CHARS = 400
 
-/** Formats [state] for the listening notification. */
-internal fun listeningContent(state: AssistantUiState, wakePhrase: String): ListeningContent {
+/**
+ * Formats [state] for the listening notification. [wakeWordOn] is false while the service only keeps
+ * the microphone ready for the floating button, with no wake word detection.
+ */
+internal fun listeningContent(state: AssistantUiState, wakePhrase: String, wakeWordOn: Boolean = true): ListeningContent {
     val publicTitle = when (state.phase) {
-        // Idle only shows for the moment between entering the foreground and the mic starting.
-        AssistantPhase.Idle, AssistantPhase.WakeListening ->
-            wakePhrase.trim().takeIf { it.isNotEmpty() }?.let { "Listening for “$it”" } ?: "Listening for the wake word"
+        AssistantPhase.Idle, AssistantPhase.WakeListening -> when {
+            // With the wake word on, Idle only shows between entering the foreground and the mic starting.
+            !wakeWordOn && state.phase == AssistantPhase.Idle -> READY_TITLE
+            else -> wakePhrase.trim().takeIf { it.isNotEmpty() }?.let { "Listening for “$it”" } ?: "Listening for the wake word"
+        }
         AssistantPhase.Hearing -> "Hearing you…"
         AssistantPhase.Thinking -> "Thinking…"
         AssistantPhase.Acting -> "Acting…"
@@ -29,9 +34,13 @@ internal fun listeningContent(state: AssistantUiState, wakePhrase: String): List
     return ListeningContent(
         title = clip(title, MAX_TITLE_CHARS),
         publicTitle = publicTitle,
-        text = listeningText(state)?.let { clip(it, MAX_TEXT_CHARS) },
+        text = (listeningText(state) ?: READY_TEXT.takeIf { publicTitle == READY_TITLE })?.let { clip(it, MAX_TEXT_CHARS) },
     )
 }
+
+internal const val READY_TITLE = "Wakey is ready"
+internal const val READY_TEXT = "Tap the floating Wakey button to talk."
+
 
 /** Live transcript, else a pending question, else what the current phase is doing, else the status line. */
 private fun listeningText(state: AssistantUiState): String? {

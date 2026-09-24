@@ -12,7 +12,10 @@ import ai.wakey.android.llm.ChatModel
 import ai.wakey.android.llm.ChatRequest
 import ai.wakey.android.llm.ChatResponse
 import ai.wakey.android.llm.ToolCall
+import ai.wakey.android.tasks.TaskRequest
 import android.content.Intent
+import java.time.ZoneId
+import java.time.ZonedDateTime
 
 /** One fake app screen. [texts] are non-clickable labels (titles, summaries); the rest are buttons. */
 internal data class FakeUi(
@@ -47,8 +50,6 @@ internal fun observationOf(vararg elements: ScreenElement, appLabel: String = "S
 /** A scriptable [ScreenController] that records every action. */
 internal class FakeScreen(var ui: FakeUi) : ScreenController {
     val log = mutableListOf<String>()
-    val statuses = mutableListOf<String>()
-    var statusHidden = 0
     var locked = false
     var screenshotResult = ScreenshotResult(null, 0, 0, "Secure window")
 
@@ -56,7 +57,6 @@ internal class FakeScreen(var ui: FakeUi) : ScreenController {
     val transitions = mutableMapOf<String, FakeUi>()
     var onScroll: (ScrollDirection) -> Unit = {}
     var onText: (String) -> Unit = {}
-    var lastStop: (() -> Unit)? = null
     private var latest: ScreenObservation = ui.observation()
 
     override val foregroundPackage: String get() = ui.packageName
@@ -88,15 +88,6 @@ internal class FakeScreen(var ui: FakeUi) : ScreenController {
     override suspend fun screenshot(): ScreenshotResult = screenshotResult.also { log += "screenshot" }
     override suspend fun awaitSettled(timeoutMs: Long) = Unit
     override fun launch(intent: Intent): Boolean = false
-
-    override fun showStatus(text: String, onStop: () -> Unit) {
-        statuses += text
-        lastStop = onStop
-    }
-
-    override fun hideStatus() {
-        statusHidden++
-    }
 }
 
 /** Opens apps by exact name by switching the [FakeScreen] to their first screen. */
@@ -143,6 +134,12 @@ internal class RecordingListener(
 ) : AgentListener {
     val actions = mutableListOf<AgentActionInfo>()
     val confirmations = mutableListOf<ConfirmationRequest>()
+    val scheduled = mutableListOf<TaskRequest.Scheduled>()
+
+    override fun schedule(request: TaskRequest.Scheduled): String {
+        scheduled += request
+        return "Scheduled ${request.text}."
+    }
     var onActionHook: (AgentActionInfo) -> Unit = {}
 
     override fun onAction(action: AgentActionInfo) {
@@ -165,5 +162,8 @@ internal fun agentLoop(
     maxSteps: Int = WakeySettings.DEFAULT_MAX_STEPS,
     clock: () -> Long = { 1_000L },
     timeoutMs: Long = 120_000L,
-    onStop: () -> Unit = {},
-) = AgentLoop(model, apps, { screen }, { WakeySettings(maxAgentSteps = maxSteps) }, clock, timeoutMs, onStop)
+    now: () -> ZonedDateTime = { FIXED_NOW },
+) = AgentLoop(model, apps, { screen }, { WakeySettings(maxAgentSteps = maxSteps) }, clock, timeoutMs, now)
+
+/** Thursday 24 September 2026, 2:00 PM in India. */
+internal val FIXED_NOW: ZonedDateTime = ZonedDateTime.of(2026, 9, 24, 14, 0, 0, 0, ZoneId.of("Asia/Kolkata"))

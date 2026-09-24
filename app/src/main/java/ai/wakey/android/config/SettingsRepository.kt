@@ -49,6 +49,7 @@ class SettingsRepository(context: Context) {
             llmModel = prefs.getString("llm_model", d.llmModel) ?: d.llmModel,
             maxAgentSteps = prefs.getInt("max_agent_steps", d.maxAgentSteps),
             onboardingDone = prefs.getBoolean("onboarding_done", d.onboardingDone),
+            floatingButton = prefs.getBoolean("floating_button", d.floatingButton),
         ).let(::sanitize)
     }
 
@@ -67,6 +68,7 @@ class SettingsRepository(context: Context) {
             .putString("llm_model", s.llmModel)
             .putInt("max_agent_steps", s.maxAgentSteps)
             .putBoolean("onboarding_done", s.onboardingDone)
+            .putBoolean("floating_button", s.floatingButton)
             .apply()
     }
 
