@@ -46,17 +46,6 @@ internal sealed interface AgentAction {
         override val reason: String?,
     ) : ScreenChanging
 
-    /** Taps pixel ([x], [y]) of the latest screenshot. */
-    data class TapPoint(val x: Int, val y: Int, override val sensitive: Boolean, override val reason: String?) : ScreenChanging
-
-    /** Scrolls until an element whose label contains [text] is visible. */
-    data class ScrollTo(
-        val text: String,
-        val direction: ScrollDirection,
-        override val sensitive: Boolean,
-        override val reason: String?,
-    ) : ScreenChanging
-
     data class GoBack(override val sensitive: Boolean, override val reason: String?) : ScreenChanging
     data class GoHome(override val sensitive: Boolean, override val reason: String?) : ScreenChanging
     data object ReadScreen : AgentAction
@@ -65,14 +54,8 @@ internal sealed interface AgentAction {
     data class AskUser(val question: String) : AgentAction
 }
 
-/**
- * The model's claim that an action completes the request: [reply] is spoken if [visibleText] shows
- * up on the next screen, so the run can end without another model call.
- */
-internal data class DoneClaim(val reply: String, val visibleText: String)
-
 internal sealed interface ToolValidation {
-    data class Valid(val action: AgentAction, val done: DoneClaim? = null) : ToolValidation
+    data class Valid(val action: AgentAction) : ToolValidation
     data class Invalid(val error: String) : ToolValidation
 }
 
@@ -86,16 +69,12 @@ internal object AgentTools {
     const val GO_BACK = "go_back"
     const val GO_HOME = "go_home"
     const val TAKE_SCREENSHOT = "take_screenshot"
-    const val TAP_POINT = "tap_point"
-    const val SCROLL_TO = "scroll_to"
     const val FINISH = "finish"
     const val ASK_USER = "ask_user"
 
     // Kept terse: the system prompt explains when to set sensitive, and every tool repeats these.
     private const val SAFETY_PROPS = """"sensitive":{"type":"boolean"},"reason":{"type":"string"}"""
     private const val ELEMENT_ID = """"element_id":{"type":"integer"}"""
-    private const val DONE_PROPS = """"done_reply":{"type":"string"},"done_if_visible":{"type":"string"}"""
-    private const val DIRECTION = """"direction":{"type":"string","enum":["up","down","left","right"]}"""
 
     val specs: List<ToolSpec> = listOf(
         ToolSpec(
@@ -107,27 +86,17 @@ internal object AgentTools {
         ToolSpec(
             TAP,
             "Tap an element on the latest screen. Give element_id (preferred) or its visible label.",
-            schema("""$ELEMENT_ID,"label":{"type":"string"},$DONE_PROPS,$SAFETY_PROPS"""),
+            schema("""$ELEMENT_ID,"label":{"type":"string"},$SAFETY_PROPS"""),
         ),
         ToolSpec(
             ENTER_TEXT,
-            "Type into an input field (element_id, or the focused field). A search icon or fake search box is tapped first automatically. submit=true presses Enter/Search.",
-            schema(""""text":{"type":"string"},$ELEMENT_ID,"submit":{"type":"boolean"},$DONE_PROPS,$SAFETY_PROPS""", "text"),
+            "Replace the text of an input field (the element_id, or the focused field). submit=true presses Enter/Search afterwards.",
+            schema(""""text":{"type":"string"},$ELEMENT_ID,"submit":{"type":"boolean"},$SAFETY_PROPS""", "text"),
         ),
         ToolSpec(
             SCROLL,
             "Scroll the screen, or the given scrollable element, to reveal more content.",
-            schema("""$DIRECTION,$ELEMENT_ID,$SAFETY_PROPS""", "direction"),
-        ),
-        ToolSpec(
-            SCROLL_TO,
-            "Scroll (default down) until an element whose label contains text is visible. Use instead of repeated scroll calls.",
-            schema(""""text":{"type":"string"},$DIRECTION,$SAFETY_PROPS""", "text"),
-        ),
-        ToolSpec(
-            TAP_POINT,
-            "Tap pixel x,y of the latest screenshot. Only for controls missing from the element list.",
-            schema(""""x":{"type":"integer"},"y":{"type":"integer"},$DONE_PROPS,$SAFETY_PROPS""", "x", "y"),
+            schema(""""direction":{"type":"string","enum":["up","down","left","right"]},$ELEMENT_ID,$SAFETY_PROPS""", "direction"),
         ),
         ToolSpec(GO_BACK, "Press the Android Back button.", schema(SAFETY_PROPS)),
         ToolSpec(GO_HOME, "Go to the home screen.", schema(SAFETY_PROPS)),
@@ -161,50 +130,18 @@ internal object AgentTools {
      * Checks that [call] names an allowed tool, has well-formed arguments with the required fields,
      * and only refers to elements present in [observation] (the latest screen).
      */
-    fun validate(
-        call: ToolCall,
-        allowed: Set<String>,
-        observation: ScreenObservation?,
-        idScreen: ScreenObservation? = null,
-    ): ToolValidation {
+    fun validate(call: ToolCall, allowed: Set<String>, observation: ScreenObservation?): ToolValidation {
         if (specs.none { it.name == call.name }) return invalid("Unknown tool \"${call.name}\". Use one of: ${allowed.joinToString()}.")
-        if (call.name == TAP_POINT && call.name !in allowed) return invalid("tap_point needs a current screenshot; call take_screenshot first.")
         if (call.name !in allowed) return invalid("\"${call.name}\" is not available now. Use one of: ${allowed.joinToString()}.")
         val args = parseArguments(call.argumentsJson) ?: return invalid("The arguments must be a JSON object.")
         return try {
-            val parsed = Arguments(args)
-            ToolValidation.Valid(action(call.name, parsed, Screens(observation, idScreen)), doneClaim(parsed))
+            ToolValidation.Valid(action(call.name, Arguments(args), observation))
         } catch (e: InvalidArgument) {
             invalid(e.message.orEmpty())
         }
     }
 
-    private fun doneClaim(args: Arguments): DoneClaim? {
-        val reply = args.string("done_reply")?.trim()?.ifEmpty { null } ?: return null
-        val visible = args.string("done_if_visible")?.trim()?.ifEmpty { null } ?: return null
-        return DoneClaim(reply, visible)
-    }
-
-    /**
-     * The screen ids are checked against. Later calls in a batched turn were written against the
-     * turn's first screen ([idScreen]), so their ids are mapped by label onto the current screen.
-     */
-    private class Screens(val current: ScreenObservation?, val idScreen: ScreenObservation?) {
-        val elements get() = current?.elements
-
-        fun element(id: Int): ScreenElement {
-            val source = idScreen?.takeIf { it !== current }
-                ?: return current?.elements?.firstOrNull { it.id == id }
-                    ?: throw InvalidArgument("Element [$id] is not on the current screen. Use an id from the latest screen.")
-            val old = source.elements.firstOrNull { it.id == id }
-                ?: throw InvalidArgument("Element [$id] was not on the screen this turn started from.")
-            val label = old.label() ?: throw InvalidArgument("Element [$id] has no label to find it again after the screen changed.")
-            return findByLabel(current, label)
-                ?: throw InvalidArgument("“$label” is not on the new screen; decide the next step from it.")
-        }
-    }
-
-    private fun action(tool: String, args: Arguments, observation: Screens): AgentAction {
+    private fun action(tool: String, args: Arguments, observation: ScreenObservation?): AgentAction {
         val sensitive = args.boolean("sensitive") ?: false
         val reason = args.string("reason")?.trim()?.ifEmpty { null }
         return when (tool) {
@@ -215,9 +152,9 @@ internal object AgentTools {
                 val id = args.int("element_id")
                 val label = args.string("label")?.trim()?.ifEmpty { null }
                 when {
-                    id != null -> observation.element(id).let { AgentAction.Tap(ElementTarget(id = it.id), it, sensitive, reason) }
+                    id != null -> AgentAction.Tap(ElementTarget(id = id), element(observation, id), sensitive, reason)
                     label != null -> {
-                        val element = findByLabel(observation.current, label)
+                        val element = findByLabel(observation, label)
                             ?: throw InvalidArgument("No element labelled \"$label\" on the current screen. Use an element_id from the latest screen.")
                         AgentAction.Tap(ElementTarget(id = element.id, label = label), element, sensitive, reason)
                     }
@@ -226,26 +163,16 @@ internal object AgentTools {
             }
             ENTER_TEXT -> {
                 val text = args.string("text") ?: throw InvalidArgument("\"text\" is required.")
-                val element = args.int("element_id")?.let { observation.element(it) }
+                val element = args.int("element_id")?.let { element(observation, it) }
                 AgentAction.EnterText(text, element?.let { ElementTarget(id = it.id) }, element, args.boolean("submit") ?: false, sensitive, reason)
             }
             SCROLL -> {
-                val direction = direction(args.requiredText("direction"))
-                val target = args.int("element_id")?.let { ElementTarget(id = observation.element(it).id) }
+                val raw = args.requiredText("direction")
+                val direction = ScrollDirection.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
+                    ?: throw InvalidArgument("direction must be up, down, left or right.")
+                val target = args.int("element_id")?.let { ElementTarget(id = element(observation, it).id) }
                 AgentAction.Scroll(direction, target, sensitive, reason)
             }
-            SCROLL_TO -> AgentAction.ScrollTo(
-                args.requiredText("text").trim(),
-                args.string("direction")?.let(::direction) ?: ScrollDirection.Down,
-                sensitive,
-                reason,
-            )
-            TAP_POINT -> AgentAction.TapPoint(
-                args.int("x") ?: throw InvalidArgument("\"x\" is required."),
-                args.int("y") ?: throw InvalidArgument("\"y\" is required."),
-                sensitive,
-                reason,
-            )
             GO_BACK -> AgentAction.GoBack(sensitive, reason)
             GO_HOME -> AgentAction.GoHome(sensitive, reason)
             FINISH -> AgentAction.Finish(args.requiredText("reply").trim())
@@ -254,9 +181,9 @@ internal object AgentTools {
         }
     }
 
-    private fun direction(raw: String): ScrollDirection =
-        ScrollDirection.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
-            ?: throw InvalidArgument("direction must be up, down, left or right.")
+    private fun element(observation: ScreenObservation?, id: Int): ScreenElement =
+        observation?.elements?.firstOrNull { it.id == id }
+            ?: throw InvalidArgument("Element [$id] is not on the current screen. Use an id from the latest screen.")
 
     /** Exact (case-insensitive) label first, then the first element whose label contains it. */
     private fun findByLabel(observation: ScreenObservation?, label: String): ScreenElement? {

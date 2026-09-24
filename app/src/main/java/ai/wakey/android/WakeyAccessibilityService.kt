@@ -39,7 +39,6 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
-import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
@@ -181,22 +180,6 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
                 is ScrollPlan.Swipe -> swipe(direction, plan.bounds ?: screenArea ?: displayBounds())
             }
         }
-
-    override suspend fun tapPoint(x: Int, y: Int, imageWidth: Int, imageHeight: Int): ActionOutcome {
-        lockedOutcome()?.let { return it }
-        if (imageWidth <= 0 || imageHeight <= 0 || x !in 0 until imageWidth || y !in 0 until imageHeight) {
-            return ActionOutcome(false, "($x, $y) is outside the ${imageWidth}×$imageHeight screenshot.")
-        }
-        // Screenshots cover the whole display, so scale against the full display, not the app window.
-        val display = getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
-        val screenX = (x * display.width().toLong() / imageWidth).toInt()
-        val screenY = (y * display.height().toLong() / imageHeight).toInt()
-        return if (tapAt(screenX, screenY)) {
-            ActionOutcome(true, "Tapped the screenshot at ($x, $y)")
-        } else {
-            ActionOutcome(false, "Couldn't tap at ($x, $y).")
-        }
-    }
 
     override fun back(): ActionOutcome = globalAction(GLOBAL_ACTION_BACK, "Went back", "Couldn't go back.")
 

@@ -8,12 +8,12 @@ import org.junit.Test
 class ScreenshotEncoderTest {
 
     @Test
-    fun `images are scaled so the longest side is at most 1024 and never enlarged`() {
-        assertEquals(461 to 1024, ScreenshotEncoder.fitWithin(1080, 2400))
-        assertEquals(1024 to 461, ScreenshotEncoder.fitWithin(2400, 1080))
-        assertEquals(1024 to 1024, ScreenshotEncoder.fitWithin(1440, 1440))
+    fun `images are scaled so the longest side is at most 1280 and never enlarged`() {
+        assertEquals(576 to 1280, ScreenshotEncoder.fitWithin(1080, 2400))
+        assertEquals(1280 to 576, ScreenshotEncoder.fitWithin(2400, 1080))
+        assertEquals(1280 to 1280, ScreenshotEncoder.fitWithin(1440, 1440))
         assertEquals(800 to 600, ScreenshotEncoder.fitWithin(800, 600))
-        assertEquals(576 to 1024, ScreenshotEncoder.fitWithin(720, 1280))
+        assertEquals(720 to 1280, ScreenshotEncoder.fitWithin(720, 1280))
     }
 
     @Test

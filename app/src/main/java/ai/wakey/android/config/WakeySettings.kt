@@ -31,10 +31,6 @@ data class WakeySettings(
     val llmBaseUrl: String = DEFAULT_LLM_BASE_URL,
     val llmModel: String = DEFAULT_LLM_MODEL,
     val maxAgentSteps: Int = DEFAULT_MAX_STEPS,
-    /** Let the fast decision model (Jev) pick routine steps before asking the LLM. */
-    val useFastDecisions: Boolean = true,
-    val decisionBaseUrl: String = DEFAULT_DECISION_BASE_URL,
-    val decisionModel: String = DEFAULT_DECISION_MODEL,
     val onboardingDone: Boolean = false,
 ) {
     companion object {
@@ -44,8 +40,6 @@ data class WakeySettings(
         const val DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"
         const val DEFAULT_LLM_MODEL = "accounts/fireworks/models/deepseek-v4p1-flash"
         const val DEFAULT_MAX_STEPS = 12
-        const val DEFAULT_DECISION_BASE_URL = "https://api.aimlapi.com/v1"
-        const val DEFAULT_DECISION_MODEL = "typesafe/jev"
         const val MAX_AGENT_STEPS_LIMIT = 25
 
         /** "Hey, Wakey!" → "Hey Wakey": the keyword encoder accepts letters, apostrophes and spaces only. */
@@ -58,5 +52,4 @@ data class WakeySettings(
 enum class SecretKind(val label: String, val prefKey: String) {
     LlmApiKey("Fireworks / LLM API key", "llm_api_key"),
     DeepgramApiKey("Deepgram API key", "deepgram_api_key"),
-    DecisionApiKey("AI/ML API key (Jev)", "decision_api_key"),
 }

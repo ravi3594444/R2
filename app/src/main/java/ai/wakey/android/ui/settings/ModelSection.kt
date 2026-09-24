@@ -15,7 +15,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -24,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -74,17 +72,6 @@ fun ModelSection(controller: AssistantController, settings: WakeySettings) {
         ) { Text("Save") }
 
         MaxStepsSlider(settings.maxAgentSteps) { steps -> controller.updateSettings { it.copy(maxAgentSteps = steps) } }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Fast decisions with Jev", style = MaterialTheme.typography.bodyLarge)
-                NoteText("Jev (via AI/ML API) picks routine taps in about half a second; the AI model takes over when it's unsure. Needs the AI/ML API key below.")
-            }
-            Switch(
-                checked = settings.useFastDecisions,
-                onCheckedChange = { on -> controller.updateSettings { it.copy(useFastDecisions = on) } },
-            )
-        }
 
         ConnectionTest("Test connection", controller::testLlmConnection)
         if (changed) NoteText("The test uses the saved settings. Save first to test your changes.")

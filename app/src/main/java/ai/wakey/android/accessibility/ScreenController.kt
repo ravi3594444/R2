@@ -24,12 +24,6 @@ interface ScreenController {
     suspend fun enterText(target: ElementTarget?, text: String, submit: Boolean): ActionOutcome
 
     suspend fun scroll(direction: ScrollDirection, target: ElementTarget?): ActionOutcome
-
-    /**
-     * Taps pixel ([x], [y]) of a screenshot that was [imageWidth]×[imageHeight], scaled to the real
-     * screen. For controls the element list doesn't expose.
-     */
-    suspend fun tapPoint(x: Int, y: Int, imageWidth: Int, imageHeight: Int): ActionOutcome
     fun back(): ActionOutcome
     fun home(): ActionOutcome
 

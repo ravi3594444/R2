@@ -21,8 +21,6 @@ internal object SafetyPolicy {
             is AgentAction.EnterText -> "Type “${action.text.ellipsize()}”${if (action.submit) " and submit it" else ""}$inApp?"
             is AgentAction.OpenApp -> "Open ${action.name}?"
             is AgentAction.Scroll -> "Scroll ${action.direction.name.lowercase()}$inApp?"
-            is AgentAction.ScrollTo -> "Scroll to “${action.text.ellipsize()}”$inApp?"
-            is AgentAction.TapPoint -> "Tap that spot on the screen$inApp?"
             is AgentAction.GoBack -> "Go back$inApp?"
             is AgentAction.GoHome -> "Go to the home screen?"
         }

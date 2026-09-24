@@ -63,7 +63,7 @@ class AgentLoopTest {
         // The first model request already carries the opened Settings screen as the open_app result.
         val first = model.requests[0]
         assertEquals(AgentTools.specs.map { it.name }, first.tools.map { it.name })
-        assertTrue((first.messages[0] as ChatMessage.System).text.contains("up to 3 tools in one turn"))
+        assertTrue((first.messages[0] as ChatMessage.System).text.contains("exactly one tool per turn"))
         assertTrue(first.messages.any { it is ChatMessage.User && it.text.startsWith("Request: open Settings and find Bluetooth") })
         val opened = first.messages.last() as ChatMessage.Tool
         assertEquals("open_app", opened.name)
@@ -350,7 +350,7 @@ class AgentLoopTest {
     }
 
     @Test
-    fun batchedCallsRunInOrderAndAllGetResults() = runTest {
+    fun onlyTheFirstOfSeveralToolCallsRuns() = runTest {
         val screen = FakeScreen(settingsMain).apply { transitions["Bluetooth"] = bluetooth }
         val two = toolCall("tap", """{"element_id":3}""").let {
             it.copy(toolCalls = it.toolCalls + ToolCall("second", "go_home", "{}"))
@@ -359,163 +359,10 @@ class AgentLoopTest {
 
         agentLoop(model, screen).run("open bluetooth", RecordingListener())
 
-        assertEquals(listOf("tap Bluetooth", "home"), screen.log)
-        val next = model.requests[1].messages
-        assertEquals(2, next.filterIsInstance<ChatMessage.Assistant>().last().toolCalls.size)
-        assertEquals(listOf("call_tap_${"""{"element_id":3}""".hashCode()}", "second"), next.filterIsInstance<ChatMessage.Tool>().takeLast(2).map { it.toolCallId })
-    }
-
-    @Test
-    fun laterCallsInATurnAreRetargetedByLabel() = runTest {
-        val connected = FakeUi("com.android.settings", "Settings", listOf("Connected devices", "Apps", "Bluetooth"))
-        val devices = FakeUi("com.android.settings", "Settings", listOf("Pair new device", "Bluetooth"))
-        val screen = FakeScreen(connected).apply {
-            transitions["Connected devices"] = devices
-            transitions["Bluetooth"] = bluetooth
-        }
-        // Both ids refer to the first screen; [3] "Bluetooth" is [2] after the first tap.
-        val batch = ChatResponseOf(ToolCall("a", "tap", """{"element_id":1}"""), ToolCall("b", "tap", """{"element_id":3}"""))
-        val model = ScriptedModel.of(batch, toolCall("finish", """{"reply":"Bluetooth is open."}"""))
-
-        val result = agentLoop(model, screen).run("find bluetooth", RecordingListener())
-
-        assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(listOf("tap Connected devices", "tap Bluetooth"), screen.log)
-    }
-
-    @Test
-    fun laterCallIsSkippedWhenItsElementIsGone() = runTest {
-        val connected = FakeUi("com.android.settings", "Settings", listOf("Connected devices", "Apps", "Battery"))
-        val devices = FakeUi("com.android.settings", "Settings", listOf("Pair new device", "Bluetooth", "Saved devices"))
-        val screen = FakeScreen(connected).apply { transitions["Connected devices"] = devices }
-        val batch = ChatResponseOf(ToolCall("a", "tap", """{"element_id":1}"""), ToolCall("b", "tap", """{"element_id":2}"""))
-        val model = ScriptedModel.of(batch, toolCall("finish", """{"reply":"Okay."}"""))
-
-        agentLoop(model, screen).run("open apps", RecordingListener())
-
-        assertEquals(listOf("tap Connected devices"), screen.log)
-        val skipped = model.requests[1].messages.filterIsInstance<ChatMessage.Tool>().last()
-        assertEquals("b", skipped.toolCallId)
-        assertTrue(skipped.content, skipped.content.contains("not on the new screen"))
-    }
-
-    @Test
-    fun confirmedDoneClaimEndsWithoutAnotherModelCall() = runTest {
-        val screen = FakeScreen(settingsMain).apply { transitions["Bluetooth"] = bluetooth }
-        val model = ScriptedModel.of(
-            toolCall("tap", """{"element_id":3,"done_reply":"Bluetooth settings are open.","done_if_visible":"Use Bluetooth"}"""),
-        )
-
-        val result = agentLoop(model, screen).run("open Bluetooth settings", RecordingListener())
-
-        assertEquals(AgentStatus.Completed, result.status)
-        assertEquals("Bluetooth settings are open.", result.reply)
-        assertEquals(1, result.llmCalls)
         assertEquals(listOf("tap Bluetooth"), screen.log)
+        val assistant = model.requests[1].messages.filterIsInstance<ChatMessage.Assistant>().last()
+        assertEquals(1, assistant.toolCalls.size)
     }
-
-    @Test
-    fun unconfirmedDoneClaimAsksTheModelAgain() = runTest {
-        val screen = FakeScreen(settingsMain).apply { transitions["Bluetooth"] = bluetooth }
-        val model = ScriptedModel.of(
-            toolCall("tap", """{"element_id":3,"done_reply":"Wi-Fi is open.","done_if_visible":"Wi-Fi preferences"}"""),
-            toolCall("finish", """{"reply":"That opened Bluetooth instead."}"""),
-        )
-
-        val result = agentLoop(model, screen).run("open wifi settings", RecordingListener())
-
-        assertEquals(2, result.llmCalls)
-        assertEquals("That opened Bluetooth instead.", result.reply)
-        val note = model.requests[1].messages.filterIsInstance<ChatMessage.Tool>().last()
-        assertTrue(note.content.contains("Not finished yet"))
-    }
-
-    @Test
-    fun doneClaimOnAListedButUnopenedTargetIsNotAccepted() = runTest {
-        val devices = FakeUi("com.android.settings", "Settings", listOf("Connected devices", "Pair new device", "Bluetooth"), texts = setOf("Connected devices"))
-        val screen = FakeScreen(settingsMain).apply { transitions["Network & internet"] = devices }
-        screen.transitions["Bluetooth"] = bluetooth
-        val model = ScriptedModel.of(
-            toolCall("tap", """{"element_id":2,"done_reply":"Found it.","done_if_visible":"Bluetooth"}"""),
-            toolCall("tap", """{"label":"Bluetooth"}"""),
-            toolCall("finish", """{"reply":"Bluetooth settings are open."}"""),
-        )
-
-        val result = agentLoop(model, screen).run("open Settings and find Bluetooth", RecordingListener())
-
-        // The claim after the first tap is refused: Bluetooth was only listed, not opened.
-        assertEquals(3, result.llmCalls)
-        assertEquals("Bluetooth settings are open.", result.reply)
-        assertEquals(listOf("tap Network & internet", "tap Bluetooth"), screen.log)
-    }
-
-    @Test
-    fun scrollToScrollsUntilTheTextIsVisibleInOneStep() = runTest {
-        var page = 0
-        val screen = FakeScreen(settingsMain)
-        screen.onScroll = {
-            page++
-            screen.ui = settingsMain.copy(items = settingsMain.items + (if (page >= 2) "Developer options" else "Page $page"))
-        }
-        val model = ScriptedModel.of(
-            toolCall("scroll_to", """{"text":"developer"}"""),
-            toolCall("finish", """{"reply":"Developer options are on screen."}"""),
-        )
-
-        val result = agentLoop(model, screen).run("look for developer options in the list", RecordingListener())
-
-        assertEquals(listOf("scroll down", "scroll down"), screen.log)
-        assertEquals(2, result.llmCalls)
-        val found = model.requests[1].messages.filterIsInstance<ChatMessage.Tool>().last()
-        assertTrue(found.content, found.content.startsWith("OK: Found “Developer options”"))
-    }
-
-    @Test
-    fun tapPointNeedsAScreenshot() = runTest {
-        val screen = FakeScreen(settingsMain)
-        val model = ScriptedModel.of(toolCall("tap_point", """{"x":10,"y":20}"""), toolCall("finish", """{"reply":"Okay."}"""))
-
-        agentLoop(model, screen).run("tap the thing", RecordingListener())
-
-        assertTrue(screen.log.none { it.startsWith("tap point") })
-        val error = model.requests[1].messages.filterIsInstance<ChatMessage.Tool>().last()
-        assertTrue(error.content.contains("needs a current screenshot"))
-    }
-
-    @Test
-    fun thinScreenGetsAScreenshotAndTapPointUsesIt() = runTest {
-        val game = FakeUi("com.example.game", "Game", listOf("Game view"))
-        val screen = FakeScreen(game).apply {
-            screenshotResult = ScreenshotResult("aGVsbG8=", 461, 1024)
-            pointTransition = game.copy(items = listOf("Game view", "Level 2"))
-        }
-        val model = ScriptedModel.of(
-            toolCall("tap_point", """{"x":230,"y":900,"done_reply":"Started level 2.","done_if_visible":"Level 2"}"""),
-        )
-
-        val result = agentLoop(model, screen).run("start the next level", RecordingListener())
-
-        val image = model.requests[0].messages.filterIsInstance<ChatMessage.User>().last()
-        assertEquals("aGVsbG8=", image.imageJpegBase64)
-        assertEquals(listOf("screenshot", "tap point 230,900 of 461x1024"), screen.log)
-        assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(1, result.llmCalls)
-    }
-
-    @Test
-    fun finishAfterAnActionInTheSameTurnWaitsForTheNewScreen() = runTest {
-        val screen = FakeScreen(settingsMain).apply { transitions["Bluetooth"] = bluetooth }
-        val batch = ChatResponseOf(ToolCall("a", "tap", """{"element_id":3}"""), ToolCall("b", "finish", """{"reply":"Done!"}"""))
-        val model = ScriptedModel.of(batch, toolCall("finish", """{"reply":"Bluetooth is open."}"""))
-
-        val result = agentLoop(model, screen).run("open bluetooth", RecordingListener())
-
-        assertEquals("Bluetooth is open.", result.reply)
-        assertEquals(2, result.llmCalls)
-    }
-
-    private fun ChatResponseOf(vararg calls: ToolCall) =
-        toolCall("tap").copy(toolCalls = calls.toList())
 
     private fun ChatMessage.text(): String = when (this) {
         is ChatMessage.System -> text

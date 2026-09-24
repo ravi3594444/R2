@@ -25,8 +25,6 @@ data class AgentResult(
     val completionTokens: Int,
     /** SystemClock.elapsedRealtime() when the first Android action executed, if any. */
     val firstActionAtMs: Long?,
-    /** Steps decided by the fast decision model (Jev) instead of the LLM. */
-    val decisionCalls: Int = 0,
 )
 
 data class ConfirmationRequest(

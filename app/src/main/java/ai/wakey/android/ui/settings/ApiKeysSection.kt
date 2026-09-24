@@ -89,7 +89,6 @@ private fun ApiKeyEditor(kind: SecretKind, controller: AssistantController) {
         when (kind) {
             SecretKind.LlmApiKey -> ConnectionTest("Test LLM", controller::testLlmConnection)
             SecretKind.DeepgramApiKey -> ConnectionTest("Test Deepgram", controller::testDeepgramConnection)
-            SecretKind.DecisionApiKey -> ConnectionTest("Test Jev", controller::testJevConnection)
         }
     }
 
