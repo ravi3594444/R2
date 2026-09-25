@@ -35,6 +35,19 @@ class NotificationTextTest {
     }
 
     @Test
+    fun buttonOnlyModeSaysReadyAndHowToTalk() {
+        val c = listeningContent(AssistantUiState(phase = AssistantPhase.Idle), "Hey Wakey", wakeWordOn = false)
+        assertEquals(READY_TITLE, c.title)
+        assertEquals(READY_TITLE, c.publicTitle)
+        assertEquals(READY_TEXT, c.text)
+        // A status line still wins over the hint.
+        val status = listeningContent(AssistantUiState(phase = AssistantPhase.Idle, statusMessage = "Stopped."), "Hey Wakey", wakeWordOn = false)
+        assertEquals("Stopped.", status.text)
+        // Other phases read as usual.
+        assertEquals("Hearing you…", listeningContent(AssistantUiState(phase = AssistantPhase.Hearing), "Hey Wakey", wakeWordOn = false).title)
+    }
+
+    @Test
     fun blankWakePhraseFallsBackToGenericTitle() {
         assertEquals("Listening for the wake word", content(AssistantUiState(phase = AssistantPhase.WakeListening), "  ").title)
     }

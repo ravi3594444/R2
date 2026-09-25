@@ -3,8 +3,9 @@ package ai.wakey.android.ui
 import ai.wakey.android.accessibility.AccessibilityStatus
 import ai.wakey.android.service.BatteryOptimization
 import android.Manifest
-import android.app.role.RoleManager
+import android.app.AlarmManager
 import android.app.NotificationManager
+import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -35,6 +36,8 @@ data class SetupStatus(
     val batteryUnrestricted: Boolean,
     /** Wakey is the default digital assistant: long-press power/home and background restarts work. */
     val defaultAssistant: Boolean,
+    /** Scheduled tasks, reminders and alarms fire on time (Android 12 lets users revoke this). */
+    val exactAlarms: Boolean = true,
 ) {
     /** The main screen's "Setup needed" card covers only what blocks voice or phone control. */
     val needsAttention: Boolean get() = !microphone || !screenControl
@@ -47,6 +50,7 @@ data class SetupStatus(
             batteryUnrestricted = context.getSystemService(PowerManager::class.java)
                 ?.isIgnoringBatteryOptimizations(context.packageName) ?: true,
             defaultAssistant = context.getSystemService(RoleManager::class.java)?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true,
+            exactAlarms = context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: true,
         )
     }
 }
@@ -161,6 +165,12 @@ class WakeySetup internal constructor(private val context: Context) {
 
     fun openAccessibilitySettings() {
         open(AccessibilityStatus.settingsIntent())
+    }
+
+    /** Android 12's "Alarms & reminders" switch for Wakey; later versions grant it with the app. */
+    fun openExactAlarmSettings() {
+        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.fromParts("package", context.packageName, null))
+        if (!open(intent)) openAppSettings()
     }
 
     /** The direct "allow?" dialog, else the system exemption list, else App info. */

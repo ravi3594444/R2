@@ -67,6 +67,12 @@ class DeviceActions(
      */
     fun openApp(name: String): ActionOutcome = launch(name, resolve(name)).outcome
 
+    /** Starts an activity, from the accessibility service when possible so it works from the background. */
+    fun launchActivity(intent: Intent): Boolean = start(intent)
+
+    /** True while the lock screen shows; Wakey never tries to get past it. */
+    val isLocked: Boolean get() = screen()?.isLocked == true || keyguard?.isKeyguardLocked == true
+
     /** Launcher labels of installed apps, for STT keyterms and the model prompt. */
     fun installedAppLabels(): List<String> =
         launcherApps().map { it.label }.filter { it.isNotBlank() }.distinct().sortedBy { it.lowercase() }
@@ -85,7 +91,7 @@ class DeviceActions(
     }
 
     private fun launch(name: String, target: LaunchTarget?): AppLaunch {
-        if (isLocked()) return AppLaunch(ActionOutcome(false, LOCKED_MESSAGE))
+        if (isLocked) return AppLaunch(ActionOutcome(false, LOCKED_MESSAGE))
         if (target == null) return AppLaunch(ActionOutcome(false, "I couldn't find an app called ${name.trim()} on this phone."))
         // Without screen control Android silently blocks launches while Wakey is in the background.
         if (screen() == null && !appVisible()) return AppLaunch(ActionOutcome(false, BACKGROUND_MESSAGE))
@@ -126,12 +132,10 @@ class DeviceActions(
             false,
             "Turn on Wakey screen control in Settings › Accessibility › Wakey so I can ${if (home) "go home" else "go back"}.",
         )
-        if (isLocked()) return ActionOutcome(false, LOCKED_MESSAGE)
+        if (isLocked) return ActionOutcome(false, LOCKED_MESSAGE)
         val result = if (home) controller.home() else controller.back()
         return if (result.success) ActionOutcome(true, if (home) "Going home." else "Going back.") else result
     }
-
-    private fun isLocked(): Boolean = screen()?.isLocked == true || keyguard?.isKeyguardLocked == true
 
     private fun launcherApps(): List<LauncherApp> {
         val now = SystemClock.elapsedRealtime()

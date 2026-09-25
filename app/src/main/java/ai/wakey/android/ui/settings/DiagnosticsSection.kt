@@ -3,6 +3,7 @@ package ai.wakey.android.ui.settings
 import ai.wakey.android.BuildConfig
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AssistantController
+import ai.wakey.android.core.AssistantPhase
 import ai.wakey.android.core.AssistantUiState
 import ai.wakey.android.ui.components.NoteText
 import ai.wakey.android.ui.components.SectionCard
@@ -56,7 +57,8 @@ fun DiagnosticsSection(controller: AssistantController, state: AssistantUiState,
                 "Microphone" to when {
                     !state.wakeServiceRunning -> "Not listening"
                     micMuted -> "Muted by Android"
-                    else -> "Listening"
+                    state.wakeWordEnabled || state.phase == AssistantPhase.Hearing -> "Listening"
+                    else -> "Ready for the floating button"
                 },
             ),
         )

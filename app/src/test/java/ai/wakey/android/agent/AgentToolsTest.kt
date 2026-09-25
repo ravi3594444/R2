@@ -3,6 +3,7 @@ package ai.wakey.android.agent
 import ai.wakey.android.accessibility.ElementTarget
 import ai.wakey.android.accessibility.ScrollDirection
 import ai.wakey.android.llm.ToolCall
+import ai.wakey.android.tasks.TaskKind
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -29,7 +30,21 @@ class AgentToolsTest {
     fun rejectsUnknownAndUnavailableTools() {
         assertTrue(error("swipe", "{}").startsWith("Unknown tool \"swipe\""))
         assertTrue(error("tap", """{"element_id":3}""", AgentTools.allowed(ScreenAccess.Unavailable)).contains("not available"))
-        assertEquals(setOf("finish", "ask_user"), AgentTools.allowed(ScreenAccess.Locked))
+        assertEquals(setOf("finish", "ask_user", "schedule_task"), AgentTools.allowed(ScreenAccess.Locked))
+        assertEquals(setOf("finish", "ask_user"), AgentTools.allowed(ScreenAccess.Locked, canSchedule = false))
+    }
+
+    @Test
+    fun scheduleTaskArguments() {
+        assertEquals(AgentAction.Schedule("call mum", "at 4 pm", TaskKind.Task), valid("schedule_task", """{"task":"call mum","when":"at 4 pm"}"""))
+        assertEquals(
+            AgentAction.Schedule("drink water", "in 20 minutes", TaskKind.Reminder),
+            valid("schedule_task", """{"task":" drink water ","when":"in 20 minutes","kind":"Reminder"}"""),
+        )
+        assertEquals(AgentAction.Schedule("", "6:30 am", TaskKind.Alarm), valid("schedule_task", """{"when":"6:30 am","kind":"alarm"}"""))
+        assertEquals("\"task\" is required.", error("schedule_task", """{"when":"at 4"}"""))
+        assertEquals("\"when\" is required.", error("schedule_task", """{"task":"call mum"}"""))
+        assertEquals("kind must be task, reminder or alarm.", error("schedule_task", """{"task":"x","when":"at 4","kind":"meeting"}"""))
     }
 
     @Test
@@ -97,6 +112,6 @@ class AgentToolsTest {
             val isAction = spec.name in setOf("open_app", "tap", "enter_text", "scroll", "scroll_to", "tap_point", "go_back", "go_home")
             assertEquals(spec.name, isAction, properties.has("sensitive") && properties.has("reason"))
         }
-        assertEquals(12, AgentTools.specs.size)
+        assertEquals(13, AgentTools.specs.size)
     }
 }

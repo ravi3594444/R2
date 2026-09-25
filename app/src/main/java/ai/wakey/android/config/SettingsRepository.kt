@@ -57,6 +57,7 @@ class SettingsRepository(context: Context) {
             onboardingDone = prefs.getBoolean("onboarding_done", d.onboardingDone),
             wakeListeningWanted = prefs.getBoolean("wake_listening_wanted", d.wakeListeningWanted),
             wakeSound = prefs.getBoolean("wake_sound", d.wakeSound),
+            floatingButton = prefs.getBoolean("floating_button", d.floatingButton),
         ).let(::sanitize)
     }
 
@@ -81,6 +82,7 @@ class SettingsRepository(context: Context) {
             .putBoolean("onboarding_done", s.onboardingDone)
             .putBoolean("wake_listening_wanted", s.wakeListeningWanted)
             .putBoolean("wake_sound", s.wakeSound)
+            .putBoolean("floating_button", s.floatingButton)
             .apply()
     }
 

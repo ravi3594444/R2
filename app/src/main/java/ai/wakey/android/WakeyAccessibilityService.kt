@@ -19,18 +19,19 @@ import ai.wakey.android.accessibility.ScrollDirection
 import ai.wakey.android.accessibility.ScrollPlan
 import ai.wakey.android.accessibility.ScrollPlanner
 import ai.wakey.android.accessibility.SettleTracker
-import ai.wakey.android.accessibility.StatusOverlay
 import ai.wakey.android.accessibility.captureScreen
 import ai.wakey.android.accessibility.findFirst
 import ai.wakey.android.accessibility.screenBounds
 import ai.wakey.android.accessibility.selfOrAncestor
 import ai.wakey.android.agent.ActionOutcome
+import ai.wakey.android.overlay.OverlayManager
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.ColorSpace
 import android.graphics.Path
 import android.hardware.HardwareBuffer
@@ -58,14 +59,16 @@ import kotlin.coroutines.resume
  * Wakey's eyes and hands: reads other apps' UI through accessibility and taps, types, scrolls,
  * goes back or home and takes screenshots for the agent.
  *
+ * It also hosts Wakey's overlays over other apps (the status pill, the floating button and its task
+ * panel, and the highlight on the element being acted on); see [OverlayManager].
+ *
  * Tree reads and node actions run on a background thread (they are binder calls into the other
- * app); gestures and the status pill run on the main thread. It refuses to tap, type or scroll on
- * the lock screen, and never logs screen contents or typed text.
+ * app); gestures and overlays run on the main thread. It refuses to tap, type or scroll on the lock
+ * screen, and never logs screen contents or typed text.
  */
 class WakeyAccessibilityService : AccessibilityService(), ScreenController {
     private val settle = SettleTracker(SystemClock::uptimeMillis)
-    private val overlayHolder = lazy { StatusOverlay(this) }
-    private val overlay by overlayHolder
+    @Volatile private var overlays: OverlayManager? = null
     private val appLabels = ConcurrentHashMap<String, String>()
 
     /** The latest [observe] result; element ids refer to it. */
@@ -74,6 +77,13 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
 
     override fun onServiceConnected() {
         instance = this
+        overlays?.stop()
+        overlays = OverlayManager(this).also { it.start() }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        overlays?.onConfigurationChanged()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -191,6 +201,8 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         val display = getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
         val screenX = (x * display.width().toLong() / imageWidth).toInt()
         val screenY = (y * display.height().toLong() / imageHeight).toInt()
+        val radius = (TAP_POINT_HIGHLIGHT_DP * resources.displayMetrics.density).toInt()
+        overlays?.highlight(NodeBounds(screenX - radius, screenY - radius, screenX + radius, screenY + radius))
         return if (tapAt(screenX, screenY)) {
             ActionOutcome(true, "Tapped the screenshot at ($x, $y)")
         } else {
@@ -221,12 +233,6 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         true
     } catch (_: RuntimeException) {
         false
-    }
-
-    override fun showStatus(text: String, onStop: () -> Unit) = overlay.show(text, onStop)
-
-    override fun hideStatus() {
-        if (overlayHolder.isInitialized()) overlay.hide()
     }
 
     private sealed interface Resolution {
@@ -301,6 +307,7 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         val name = nameOf(element)
         if (!node.isEnabled) return ActionOutcome(false, "${name.capitalised()} is disabled right now.")
         val clickable = node.selfOrAncestor { it.isClickable }
+        overlays?.highlight(node.screenBounds())
         if (clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return ActionOutcome(true, "Tapped $name")
         val bounds = node.screenBounds()
         return if (!bounds.isEmpty && tapAt(bounds.centerX, bounds.centerY)) {
@@ -335,6 +342,7 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
             field.isPassword -> "Filled in the password field"
             else -> "Typed “${shorten(text)}”"
         }
+        overlays?.highlight(field.screenBounds())
         // Focus first: IME enter only works on the focused field.
         if (!field.isFocused && !field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
             field.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -405,11 +413,12 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         return gesture(GestureDescription.StrokeDescription(path, 0, TAP_MS), NodeBounds(x, y, x + 1, y + 1))
     }
 
-    /** Dispatches a one-stroke gesture on the main thread, lifting the status pill if it's in the way. */
+    /** Dispatches a one-stroke gesture on the main thread, lifting Wakey's overlays if they're in the way. */
     private suspend fun gesture(stroke: GestureDescription.StrokeDescription, area: NodeBounds): Boolean {
         val description = GestureDescription.Builder().addStroke(stroke).build()
         val run: suspend () -> Boolean = { withContext(Dispatchers.Main) { dispatch(description) } }
-        return if (overlayHolder.isInitialized() && overlay.covers(area)) overlay.hiddenWhile(run) else run()
+        val overlay = overlays
+        return if (overlay != null && overlay.covers(area)) overlay.hiddenWhile(run) else run()
     }
 
     private suspend fun dispatch(gesture: GestureDescription): Boolean = suspendCancellableCoroutine { cont ->
@@ -420,13 +429,15 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         if (!dispatchGesture(gesture, callback, null)) cont.resume(false)
     }
 
-    /** Captures with the status pill hidden; if the previous capture was too recent, waits and retries once. */
+    /** Captures with the overlays hidden; if the previous capture was too recent, waits and retries once. */
     private suspend fun takeShotWithRetry(): Shot {
-        val first = overlay.hiddenWhile { takeShot() }
+        val first = withoutOverlays { takeShot() }
         if (first !is Shot.Failed || first.code != ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) return first
         delay(SCREENSHOT_RETRY_MS)
-        return overlay.hiddenWhile { takeShot() }
+        return withoutOverlays { takeShot() }
     }
+
+    private suspend fun <T> withoutOverlays(block: suspend () -> T): T = overlays?.hiddenWhile(block) ?: block()
 
     private suspend fun takeShot(): Shot = suspendCancellableCoroutine { cont ->
         takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
@@ -468,7 +479,8 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
 
     private fun release() {
         if (instance === this) instance = null
-        if (overlayHolder.isInitialized()) overlay.dismiss()
+        overlays?.stop()
+        overlays = null
         snapshot = null
     }
 
@@ -501,6 +513,9 @@ class WakeyAccessibilityService : AccessibilityService(), ScreenController {
         val controller: ScreenController? get() = instance
 
         private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
+
+        /** Half the size of the highlight drawn where a screenshot tap lands. */
+        private const val TAP_POINT_HIGHLIGHT_DP = 22
 
         /** Label lookups read more than an observation shows, so off-list elements can still be found. */
         private const val LOOKUP_MAX_ELEMENTS = 1_000

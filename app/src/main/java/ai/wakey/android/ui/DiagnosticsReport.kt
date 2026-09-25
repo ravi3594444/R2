@@ -2,6 +2,7 @@ package ai.wakey.android.ui
 
 import ai.wakey.android.BuildConfig
 import ai.wakey.android.config.WakeySettings
+import ai.wakey.android.core.AssistantPhase
 import ai.wakey.android.core.AssistantUiState
 import ai.wakey.android.core.WakeStats
 import android.content.Context
@@ -38,6 +39,8 @@ internal fun diagnosticsReport(
     val mic = when {
         !state.wakeServiceRunning -> "closed"
         micMuted -> "MUTED by Android (records silence)"
+        // Kept running for the floating button only: the microphone opens when it is tapped.
+        !state.wakeWordEnabled && state.phase != AssistantPhase.Hearing -> "closed until the floating button is tapped"
         else -> "open, level %.2f".format(Locale.US, state.micLevel)
     }
     return buildString {
@@ -46,7 +49,11 @@ internal fun diagnosticsReport(
         appendLine("Digital assistant app is Wakey: ${yes(setup.defaultAssistant)}")
         appendLine("Background use allowed (battery unrestricted): ${yes(setup.batteryUnrestricted)}")
         appendLine("Microphone permission: ${yes(setup.microphone)}; notifications: ${yes(setup.notifications)}; screen control: ${yes(setup.screenControl)}")
-        appendLine("Listen for wake word switch: ${if (settings.wakeListeningWanted) "on" else "off"}; service running: ${yes(state.wakeServiceRunning)}")
+        appendLine(
+            "Listen for wake word switch: ${if (settings.wakeListeningWanted) "on" else "off"}; service running: ${yes(state.wakeServiceRunning)}; " +
+                "wake word running: ${yes(state.wakeWordEnabled)}",
+        )
+        appendLine("Floating button: ${if (settings.floatingButton) "on" else "off"}; exact alarms allowed: ${yes(setup.exactAlarms)}")
         appendLine("Microphone now: $mic")
         appendLine("Wake: ${settings.wakeMode.label}, phrase “${settings.wakePhrase}”, sensitivity %.2f, wake sound ${if (settings.wakeSound) "on" else "off"}".format(Locale.US, settings.wakeSensitivity))
         appendLine("Since Wakey started: ${stats.wakes} wakes, ${stats.checksConfirmed} confirmed checks, ${stats.checksRejected} dropped checks, mic muted ${stats.mutedEvents} times")

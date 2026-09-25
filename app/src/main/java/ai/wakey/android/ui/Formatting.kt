@@ -1,7 +1,11 @@
 package ai.wakey.android.ui
 
 import ai.wakey.android.core.TurnTimings
+import ai.wakey.android.tasks.TaskStatus
+import ai.wakey.android.tasks.TaskTime
+import ai.wakey.android.tasks.WakeyTask
 import ai.wakey.android.tts.VoiceOption
+import java.time.ZonedDateTime
 
 /** "180 ms", "1.2 s", "14 s". Locale-independent so it reads the same on every phone. */
 internal fun formatDuration(ms: Long): String {
@@ -82,3 +86,28 @@ internal fun isFailureSummary(summary: String): Boolean =
 
 /** Mirrors how settings store a wake phrase, so "changed?" compares like with like. */
 internal fun normalizeWakePhrase(phrase: String): String = phrase.trim().replace(Regex("\\s+"), " ")
+
+/**
+ * The second line of a task in a list: when it runs ("4:00 PM · in 12 min", "Tomorrow 9:00 AM"),
+ * where it stands ("Up next", "Waiting for you to unlock") or how it ended.
+ */
+internal fun taskStatusLine(task: WakeyTask, now: ZonedDateTime): String {
+    val due = task.dueAtMs?.let { TaskTime.at(it, now.zone) }
+    return when (task.status) {
+        TaskStatus.Scheduled -> due?.let { at ->
+            // A countdown helps for the next few hours; beyond that the time says enough.
+            val soon = at.isBefore(now.plusHours(COUNTDOWN_HOURS))
+            listOfNotNull(TaskTime.label(at, now), TaskTime.countdown(at, now)?.takeIf { soon }).joinToString(" · ")
+        } ?: "Scheduled"
+        TaskStatus.Queued -> if (due != null) "Due now · up next" else "After the current task"
+        TaskStatus.WaitingForUnlock -> "Due ${due?.let { TaskTime.clockPadded(it) } ?: "now"} · unlock to run"
+        TaskStatus.Running -> "Running now"
+        TaskStatus.Done, TaskStatus.Failed, TaskStatus.Missed, TaskStatus.Cancelled -> {
+            val ended = (task.finishedAtMs ?: task.createdAtMs).let { TaskTime.label(TaskTime.at(it, now.zone), now) }
+            val outcome = task.result?.lineSequence()?.firstOrNull()?.takeIf { it.isNotBlank() } ?: task.status.label
+            "$ended · $outcome"
+        }
+    }
+}
+
+private const val COUNTDOWN_HOURS = 3L

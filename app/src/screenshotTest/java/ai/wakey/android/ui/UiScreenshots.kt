@@ -8,6 +8,10 @@ import ai.wakey.android.core.ChatEntry
 import ai.wakey.android.core.InputSource
 import ai.wakey.android.core.Speaker
 import ai.wakey.android.core.TurnTimings
+import ai.wakey.android.tasks.TaskBoard
+import ai.wakey.android.tasks.TaskKind
+import ai.wakey.android.tasks.TaskStatus
+import ai.wakey.android.tasks.WakeyTask
 import ai.wakey.android.ui.components.NoteText
 import ai.wakey.android.ui.components.RadioRow
 import ai.wakey.android.ui.components.SectionCard
@@ -102,6 +106,19 @@ class UiScreenshots {
     fun mainSetupNeeded() = dashboard("main_6_setup_needed", AssistantUiState(), setup = ready.copy(screenControl = false))
 
     @Test
+    fun mainTasks() {
+        val now = System.currentTimeMillis()
+        val board = TaskBoard(
+            upNext = listOf(WakeyTask(3, "play despacito on YouTube", status = TaskStatus.Queued, createdAtMs = now, deferred = true)),
+            scheduled = listOf(
+                WakeyTask(1, "call mum", TaskKind.Task, TaskStatus.Scheduled, createdAtMs = now, dueAtMs = now + 50 * 60_000),
+                WakeyTask(2, "", TaskKind.Alarm, TaskStatus.Scheduled, createdAtMs = now, dueAtMs = now + 7 * 3_600_000),
+            ),
+        )
+        dashboard("main_7_tasks", AssistantUiState(phase = AssistantPhase.WakeListening, wakeServiceRunning = true, wakeWordEnabled = true), board = board)
+    }
+
+    @Test
     fun settingsControls() = shot("settings_controls") {
         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             SectionCard("Wake word", icon = Icons.Rounded.Hearing, subtitle = "Short, distinct English phrases work best.") {
@@ -131,8 +148,14 @@ class UiScreenshots {
         ChatEntry(3, Speaker.User, "Open Settings and find Bluetooth", 0, InputSource.WakeWord),
     )
 
-    private fun dashboard(name: String, state: AssistantUiState, level: Float = 0f, setup: SetupStatus = ready) = shot(name) {
-        WakeyDashboard(state, { level }, settings, setup, "Meena", noActions)
+    private fun dashboard(
+        name: String,
+        state: AssistantUiState,
+        level: Float = 0f,
+        setup: SetupStatus = ready,
+        board: TaskBoard = TaskBoard(),
+    ) = shot(name) {
+        WakeyDashboard(state, board, { level }, settings, setup, "Meena", noActions)
     }
 
     private fun shot(name: String, content: @Composable () -> Unit) {
@@ -150,7 +173,8 @@ class UiScreenshots {
     }
 
     private val noActions = DashboardActions(
-        talk = {}, stop = {}, submitText = {}, dismissStatus = {}, setWakeListening = {}, setEngine = {},
+        talk = {}, stop = {}, submitText = {}, dismissStatus = {}, setWakeListening = {}, setFloatingButton = {},
+        cancelTask = {}, runTaskNow = {}, clearFinishedTasks = {}, allowExactAlarms = {}, setEngine = {},
         openVoicePicker = {}, preview = {}, stopPreview = {}, allowMicrophone = {}, enableScreenControl = {},
         openSettings = {}, openSetup = {},
     )

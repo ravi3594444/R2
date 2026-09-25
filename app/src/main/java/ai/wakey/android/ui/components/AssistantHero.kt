@@ -5,13 +5,19 @@ import ai.wakey.android.core.AssistantPhase
 import ai.wakey.android.core.AssistantUiState
 import ai.wakey.android.ui.theme.WakeyColors
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -45,7 +51,7 @@ import androidx.compose.ui.unit.dp
 
 /** True while there is something for Stop to cancel. */
 val AssistantUiState.isBusy: Boolean
-    get() = phase in BUSY_PHASES || currentAction != null || pendingConfirmation != null
+    get() = phase in BUSY_PHASES || currentAction != null || pendingConfirmation != null || taskRunning
 
 private val BUSY_PHASES = setOf(AssistantPhase.Hearing, AssistantPhase.Thinking, AssistantPhase.Acting, AssistantPhase.Speaking)
 
@@ -73,13 +79,22 @@ fun AssistantHero(
         ) {
             AssistantOrb(state.phase, micLevel, state.currentAction, onOrbTap, size = 64.dp)
             Spacer(Modifier.width(14.dp))
-            Text(
-                caption.headline,
-                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            AnimatedContent(
+                targetState = caption,
+                modifier = Modifier.weight(1f),
+                transitionSpec = { captionTransition() },
+                contentKey = { it.key },
+                contentAlignment = Alignment.CenterStart,
+                label = "compactCaption",
+            ) { shown ->
+                Text(
+                    shown.headline,
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             AnimatedVisibility(busy, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
                 StopButton(onStop, Modifier.padding(start = 12.dp))
             }
@@ -92,8 +107,8 @@ fun AssistantHero(
             AssistantOrb(state.phase, micLevel, state.currentAction, onOrbTap, size = orbSize)
             AnimatedContent(
                 targetState = caption,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
-                contentKey = { it.phase },
+                transitionSpec = { captionTransition() },
+                contentKey = { it.key },
                 label = "caption",
             ) { shown ->
                 Column(
@@ -128,7 +143,14 @@ fun AssistantHero(
 }
 
 /** What the hero says: a big line (the live transcript while hearing) and an optional quiet hint. */
-private data class HeroCaption(val phase: AssistantPhase, val headline: String, val hint: String?, val isTranscript: Boolean = false)
+private data class HeroCaption(val phase: AssistantPhase, val headline: String, val hint: String?, val isTranscript: Boolean = false) {
+    /** A new key slides the caption in: each step does, while a live transcript updates in place. */
+    val key: Any get() = if (phase == AssistantPhase.Hearing) phase else headline
+}
+
+private fun AnimatedContentTransitionScope<HeroCaption>.captionTransition(): ContentTransform =
+    (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 3 }) togetherWith
+        (fadeOut(tween(120)) + slideOutVertically(tween(120)) { -it / 3 }) using SizeTransform(clip = false)
 
 private fun heroCaption(state: AssistantUiState, wakePhrase: String): HeroCaption = when (state.phase) {
     AssistantPhase.Idle -> HeroCaption(state.phase, "Tap to talk", "Turn on “Listen for $wakePhrase” to talk hands-free")

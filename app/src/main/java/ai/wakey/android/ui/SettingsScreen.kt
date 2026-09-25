@@ -9,6 +9,7 @@ import ai.wakey.android.ui.components.SetupChecklist
 import ai.wakey.android.ui.components.StatusBanner
 import ai.wakey.android.ui.settings.ApiKeysSection
 import ai.wakey.android.ui.settings.DiagnosticsSection
+import ai.wakey.android.ui.settings.FloatingButtonSection
 import ai.wakey.android.ui.settings.LanguageSection
 import ai.wakey.android.ui.settings.ModelSection
 import ai.wakey.android.ui.settings.VoiceSection
@@ -42,7 +43,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 
 /** Settings in display order; the order also gives the "All setup steps" link its scroll target. */
-private enum class SettingsSection { Status, WakeWord, Voice, Language, Model, ApiKeys, Setup, Diagnostics }
+private enum class SettingsSection { Status, WakeWord, FloatingButton, Voice, Language, Model, ApiKeys, Setup, Diagnostics }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,6 +96,7 @@ fun SettingsScreen(
                         StatusBanner(state.statusMessage, state.statusIsError, onDismiss = controller::dismissStatus)
 
                     SettingsSection.WakeWord -> WakeWordSection(controller, settings)
+                    SettingsSection.FloatingButton -> FloatingButtonSection(controller, settings, setup)
                     SettingsSection.Voice -> VoiceSection(controller, settings, speaking = state.phase == AssistantPhase.Speaking)
                     SettingsSection.Language ->
                         LanguageSection(settings.languageMode, onChange = { mode -> controller.updateSettings { it.copy(languageMode = mode) } })

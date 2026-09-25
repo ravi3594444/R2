@@ -50,7 +50,7 @@ class FastDecisionLoopTest {
     private val chat = FakeUi("com.whatsapp", "WhatsApp", listOf("Priya", "Message", "Send"), texts = setOf("Priya"))
 
     private fun loop(model: ScriptedModel, screen: FakeScreen, decisions: DecisionModel, apps: AppLauncher = FakeApps(screen, emptyMap())) =
-        AgentLoop(SlowModel(model), apps, { screen }, { WakeySettings() }, { 1_000L }, 120_000L, {}, { decisions })
+        AgentLoop(SlowModel(model), apps, { screen }, { WakeySettings() }, { 1_000L }, 120_000L, { decisions })
 
     @Test
     fun routineNavigationNeedsNoLlmCall() = runTest {
@@ -161,7 +161,7 @@ class FastSearchLoopTest {
         val screen = FakeScreen(home).apply { onText = { ui = results } }
         val apps = FakeApps(screen, mapOf("Instagram" to home))
         val decisions = ScriptedDecisions("search" to 0.75)
-        val loop = AgentLoop(SlowModel(ScriptedModel.of()), apps, { screen }, { WakeySettings() }, { 1_000L }, 120_000L, {}, { decisions })
+        val loop = AgentLoop(SlowModel(ScriptedModel.of()), apps, { screen }, { WakeySettings() }, { 1_000L }, 120_000L, { decisions })
 
         val result = loop.run("open Instagram and search for cats", RecordingListener())
 

@@ -79,7 +79,7 @@ class HybridLiveTest {
 
     private fun run(goal: String, decisions: DecisionModel?): AgentResult = runBlocking {
         val (screen, apps) = screens()
-        val loop = AgentLoop(llm, apps, { screen }, { WakeySettings() }, System::currentTimeMillis, 60_000L, {}, { decisions })
+        val loop = AgentLoop(llm, apps, { screen }, { WakeySettings() }, System::currentTimeMillis, 60_000L, { decisions })
         val started = System.nanoTime()
         val result = loop.run(goal, RecordingListener())
         val ms = (System.nanoTime() - started) / 1_000_000

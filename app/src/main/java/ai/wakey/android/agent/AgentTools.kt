@@ -6,6 +6,7 @@ import ai.wakey.android.accessibility.ScreenObservation
 import ai.wakey.android.accessibility.ScrollDirection
 import ai.wakey.android.llm.ToolCall
 import ai.wakey.android.llm.ToolSpec
+import ai.wakey.android.tasks.TaskKind
 import org.json.JSONException
 import org.json.JSONObject
 
@@ -63,6 +64,9 @@ internal sealed interface AgentAction {
     data object TakeScreenshot : AgentAction
     data class Finish(val reply: String) : AgentAction
     data class AskUser(val question: String) : AgentAction
+
+    /** Do [task] later, at [whenText] ("at 4 pm", "in 20 minutes"). */
+    data class Schedule(val task: String, val whenText: String, val kind: TaskKind) : AgentAction
 }
 
 /**
@@ -90,6 +94,7 @@ internal object AgentTools {
     const val SCROLL_TO = "scroll_to"
     const val FINISH = "finish"
     const val ASK_USER = "ask_user"
+    const val SCHEDULE_TASK = "schedule_task"
 
     // Kept terse: the system prompt explains when to set sensitive, and every tool repeats these.
     private const val SAFETY_PROPS = """"sensitive":{"type":"boolean"},"reason":{"type":"string"}"""
@@ -146,16 +151,30 @@ internal object AgentTools {
             "Ask the user a short question when the request is ambiguous or needs information only they have.",
             schema(""""question":{"type":"string"}""", "question"),
         ),
+        ToolSpec(
+            SCHEDULE_TASK,
+            "Do something later instead of now. task: the request to carry out then (for a reminder, what to remind about). " +
+                "when: e.g. \"at 4 pm\", \"tomorrow at 9:30 am\", \"in 20 minutes\". kind: task (Wakey does it), reminder or alarm.",
+            schema(""""task":{"type":"string"},"when":{"type":"string"},"kind":{"type":"string","enum":["task","reminder","alarm"]}""", "task", "when"),
+        ),
     )
 
-    /** Tools offered for each kind of screen access; without the screen only launching and replying remain. */
-    fun allowed(access: ScreenAccess): Set<String> = when (access) {
-        ScreenAccess.Available -> specs.mapTo(LinkedHashSet()) { it.name }
-        ScreenAccess.Unavailable -> linkedSetOf(OPEN_APP, FINISH, ASK_USER)
-        ScreenAccess.Locked -> linkedSetOf(FINISH, ASK_USER)
+    /**
+     * Tools offered for each kind of screen access; without the screen only launching, replying and
+     * scheduling remain. [canSchedule] is false for tasks that are themselves scheduled runs.
+     */
+    fun allowed(access: ScreenAccess, canSchedule: Boolean = true): Set<String> {
+        val names = when (access) {
+            ScreenAccess.Available -> specs.mapTo(LinkedHashSet()) { it.name }
+            ScreenAccess.Unavailable -> linkedSetOf(OPEN_APP, FINISH, ASK_USER, SCHEDULE_TASK)
+            ScreenAccess.Locked -> linkedSetOf(FINISH, ASK_USER, SCHEDULE_TASK)
+        }
+        if (!canSchedule) names.remove(SCHEDULE_TASK)
+        return names
     }
 
-    fun specsFor(access: ScreenAccess): List<ToolSpec> = allowed(access).let { names -> specs.filter { it.name in names } }
+    fun specsFor(access: ScreenAccess, canSchedule: Boolean = true): List<ToolSpec> =
+        allowed(access, canSchedule).let { names -> specs.filter { it.name in names } }
 
     /**
      * Checks that [call] names an allowed tool, has well-formed arguments with the required fields,
@@ -250,6 +269,17 @@ internal object AgentTools {
             GO_HOME -> AgentAction.GoHome(sensitive, reason)
             FINISH -> AgentAction.Finish(args.requiredText("reply").trim())
             ASK_USER -> AgentAction.AskUser(args.requiredText("question").trim())
+            SCHEDULE_TASK -> {
+                val kind = when (args.string("kind")?.trim()?.lowercase()) {
+                    null, "", "task" -> TaskKind.Task
+                    "reminder" -> TaskKind.Reminder
+                    "alarm", "timer" -> TaskKind.Alarm
+                    else -> throw InvalidArgument("kind must be task, reminder or alarm.")
+                }
+                val task = args.string("task")?.trim().orEmpty()
+                if (task.isEmpty() && kind != TaskKind.Alarm) throw InvalidArgument("\"task\" is required.")
+                AgentAction.Schedule(task, args.requiredText("when").trim(), kind)
+            }
             else -> throw InvalidArgument("Unknown tool \"$tool\".")
         }
     }

@@ -3,7 +3,12 @@ package ai.wakey.android.ui
 import ai.wakey.android.config.TtsEngine
 import ai.wakey.android.core.InputSource
 import ai.wakey.android.core.TurnTimings
+import ai.wakey.android.tasks.TaskKind
+import ai.wakey.android.tasks.TaskStatus
+import ai.wakey.android.tasks.WakeyTask
 import ai.wakey.android.tts.VoiceOption
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -109,5 +114,30 @@ class FormattingTest {
     @Test
     fun wakePhrasesNormaliseLikeSettings() {
         assertEquals("Hey Wakey", normalizeWakePhrase("  Hey   Wakey "))
+    }
+
+    @Test
+    fun taskStatusLines() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 24, 14, 0, 0, 0, zone)
+        fun ms(hour: Int, minute: Int = 0, day: Int = 24) = ZonedDateTime.of(2026, 9, day, hour, minute, 0, 0, zone).toInstant().toEpochMilli()
+        fun task(status: TaskStatus, due: Long? = null, finished: Long? = null, result: String? = null) =
+            WakeyTask(1, "call mum", TaskKind.Task, status, createdAtMs = ms(13), dueAtMs = due, finishedAtMs = finished, result = result)
+
+        assertEquals("4:00 PM · in 2 h", taskStatusLine(task(TaskStatus.Scheduled, due = ms(16)), now))
+        assertEquals("2:12 PM · in 12 min", taskStatusLine(task(TaskStatus.Scheduled, due = ms(14, 12)), now))
+        assertEquals("Tomorrow 9:00 AM", taskStatusLine(task(TaskStatus.Scheduled, due = ms(9, day = 25)), now))
+        assertEquals("After the current task", taskStatusLine(task(TaskStatus.Queued), now))
+        assertEquals("Due now · up next", taskStatusLine(task(TaskStatus.Queued, due = ms(14)), now))
+        assertEquals("Due 1:55 PM · unlock to run", taskStatusLine(task(TaskStatus.WaitingForUnlock, due = ms(13, 55)), now))
+        assertEquals("Running now", taskStatusLine(task(TaskStatus.Running), now))
+        assertEquals("1:58 PM · Called mum.", taskStatusLine(task(TaskStatus.Done, finished = ms(13, 58), result = "Called mum.\nMore"), now))
+        assertEquals("1:58 PM · Cancelled", taskStatusLine(task(TaskStatus.Cancelled, finished = ms(13, 58)), now))
+    }
+
+    @Test
+    fun floatingButtonNoteAsksForScreenControlWhenNeeded() {
+        assertEquals("Turn on Wakey screen control to show it.", floatingButtonNote(enabled = true, screenControl = false))
+        assertTrue(floatingButtonNote(enabled = false, screenControl = false).startsWith("Tap it in any app"))
     }
 }

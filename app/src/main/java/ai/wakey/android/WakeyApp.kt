@@ -11,6 +11,9 @@ import ai.wakey.android.llm.JevDecisionModel
 import ai.wakey.android.llm.OpenAiCompatibleChatModel
 import ai.wakey.android.service.Notifications
 import ai.wakey.android.stt.DeepgramFluxStt
+import ai.wakey.android.tasks.AlarmWakeups
+import ai.wakey.android.tasks.FileTaskStore
+import ai.wakey.android.tasks.TaskHarness
 import ai.wakey.android.tts.AndroidSpeaker
 import ai.wakey.android.tts.DeepgramSpeaker
 import ai.wakey.android.tts.RoutingSpeaker
@@ -18,7 +21,11 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class WakeyApp : Application() {
@@ -29,8 +36,15 @@ class WakeyApp : Application() {
         super.onCreate()
         instance = this
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
-            override fun onActivityStarted(activity: Activity) { startedActivities++ }
-            override fun onActivityStopped(activity: Activity) { startedActivities-- }
+            override fun onActivityStarted(activity: Activity) {
+                startedActivities++
+                visibility.value = true
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                startedActivities--
+                visibility.value = startedActivities > 0
+            }
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
             override fun onActivityResumed(activity: Activity) = Unit
             override fun onActivityPaused(activity: Activity) = Unit
@@ -46,9 +60,13 @@ class WakeyApp : Application() {
         val graph: AppGraph get() = instance.graph
 
         @Volatile private var startedActivities = 0
+        private val visibility = MutableStateFlow(false)
 
         /** True while a Wakey screen is visible; Android only lets visible apps start activities freely. */
         val isVisible: Boolean get() = startedActivities > 0
+
+        /** [isVisible] as a flow, for the overlays, which hide while Wakey's own screens show. */
+        val visible: StateFlow<Boolean> = visibility.asStateFlow()
     }
 }
 
@@ -101,6 +119,8 @@ class AppGraph(context: Context) {
         settings = { settings.current },
         decisions = { decisions.takeIf { settings.current.useFastDecisions && secrets.has(SecretKind.DecisionApiKey) } },
     )
+    val taskAlarms = AlarmWakeups(appContext)
+    val tasks = TaskHarness(FileTaskStore(File(appContext.filesDir, "tasks.json")), taskAlarms).apply { load() }
 
     val controller = AssistantController(
         appContext = appContext,
@@ -114,5 +134,6 @@ class AppGraph(context: Context) {
         device = device,
         agent = agent,
         notifications = notifications,
+        harness = tasks,
     )
 }

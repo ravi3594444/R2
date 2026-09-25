@@ -12,7 +12,22 @@ enum class AssistantPhase(val label: String) {
 
 /** How a request entered the pipeline. Voice and text share everything after transcription. */
 enum class InputSource(val label: String) {
-    WakeWord("wake word"), Mic("mic"), PushToTalk("push-to-talk"), Assistant("assistant button"), Text("typed"),
+    WakeWord("wake word"),
+    Mic("mic"),
+    PushToTalk("push-to-talk"),
+    Text("typed"),
+
+    /** Wakey's assistant panel (e.g. the power button held while Wakey is the digital assistant). */
+    Assistant("assistant button"),
+
+    /** The floating Wakey button over other apps. */
+    Button("floating button"),
+
+    /** A task queued with "… after this", now running. */
+    Queued("after the last task"),
+
+    /** A task whose scheduled time came. */
+    Scheduled("scheduled"),
 }
 
 enum class Speaker { User, Wakey, System }
@@ -90,12 +105,22 @@ data class WakeStats(
 
 data class AssistantUiState(
     val phase: AssistantPhase = AssistantPhase.Idle,
+    /** The voice service runs, so the microphone can be used from the background. */
     val wakeServiceRunning: Boolean = false,
+    /** The on-device wake word detector is on (the service may also run just for the floating button). */
+    val wakeWordEnabled: Boolean = false,
     /** Words recognised so far in the current utterance. */
     val liveTranscript: String = "",
     val entries: List<ChatEntry> = emptyList(),
     val currentAction: AgentActionInfo? = null,
     val recentActions: List<AgentActionInfo> = emptyList(),
+    /** The user entry whose task [recentActions] belong to; the step list is shown under it. */
+    val taskEntryId: Long? = null,
+    /**
+     * A task is being carried out (not its spoken reply). It can run while [phase] is Hearing: the
+     * user may talk to Wakey, e.g. "… after this", without stopping it.
+     */
+    val taskRunning: Boolean = false,
     val pendingConfirmation: PendingConfirmation? = null,
     /** Short status line, e.g. "No internet — using direct commands only". */
     val statusMessage: String? = null,

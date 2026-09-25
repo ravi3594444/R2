@@ -50,6 +50,8 @@ data class WakeySettings(
     val wakeListeningWanted: Boolean = false,
     /** A short chime when the wake phrase is heard. */
     val wakeSound: Boolean = true,
+    /** Show the floating Wakey button over other apps (needs Wakey screen control). */
+    val floatingButton: Boolean = false,
 ) {
     /** What the user says to wake Wakey, for captions and notifications: "Hey" or the wake phrase. */
     val spokenWake: String get() = if (wakeMode == WakeMode.HeyCommand) HEY else wakePhrase

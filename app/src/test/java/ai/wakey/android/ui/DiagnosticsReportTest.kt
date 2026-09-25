@@ -17,14 +17,15 @@ class DiagnosticsReportTest {
     @Test
     fun `report names the phone, the settings that matter and wake activity`() {
         val report = diagnosticsReport(
-            device, setup, WakeySettings(wakeListeningWanted = true),
-            AssistantUiState(wakeServiceRunning = true, micLevel = 0.42f),
+            device, setup, WakeySettings(wakeListeningWanted = true, floatingButton = true),
+            AssistantUiState(wakeServiceRunning = true, wakeWordEnabled = true, micLevel = 0.42f),
             WakeStats(wakes = 3, checksConfirmed = 2, checksRejected = 5, lastRejectedHeard = "hey what", mutedEvents = 1),
             micMuted = false,
         )
         for (expected in listOf(
             "Xiaomi Redmi Note 12, Android 14 (API 34)", "Digital assistant app is Wakey: yes", "battery unrestricted): NO",
-            "Listen for wake word switch: on; service running: yes", "open, level 0.42", "3 wakes, 2 confirmed checks, 5 dropped checks, mic muted 1 times",
+            "Listen for wake word switch: on; service running: yes; wake word running: yes", "Floating button: on; exact alarms allowed: yes",
+            "open, level 0.42", "3 wakes, 2 confirmed checks, 5 dropped checks, mic muted 1 times",
             "Last dropped check heard: “hey what”",
         )) {
             assertTrue("missing “$expected” in\n$report", expected in report)
