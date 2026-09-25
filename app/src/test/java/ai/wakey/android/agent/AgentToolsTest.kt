@@ -6,6 +6,7 @@ import ai.wakey.android.llm.ToolCall
 import ai.wakey.android.tasks.TaskKind
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -32,6 +33,32 @@ class AgentToolsTest {
         assertTrue(error("tap", """{"element_id":3}""", AgentTools.allowed(ScreenAccess.Unavailable)).contains("not available"))
         assertEquals(setOf("set_flashlight", "finish", "ask_user", "schedule_task"), AgentTools.allowed(ScreenAccess.Locked))
         assertEquals(setOf("set_flashlight", "finish", "ask_user"), AgentTools.allowed(ScreenAccess.Locked, canSchedule = false))
+    }
+
+    @Test
+    fun openLinkArguments() {
+        val youTube = valid("open_link", """{"link":"https://www.youtube.com/results?search_query=lofi","app":"YouTube"}""") as AgentAction.OpenLink
+        assertEquals("com.google.android.youtube", youTube.link.packageName)
+        assertEquals("YouTube", youTube.link.label)
+        assertEquals("https://www.youtube.com/results?search_query=lofi", youTube.link.uri)
+        assertEquals("android.intent.action.VIEW", youTube.link.action)
+
+        val settings = valid("open_link", """{"link":"android.settings.WIFI_SETTINGS"}""") as AgentAction.OpenLink
+        assertEquals("android.settings.WIFI_SETTINGS", settings.link.action)
+        assertEquals("com.android.settings", settings.link.packageName)
+        assertEquals("Wifi settings", settings.link.target)
+        assertNull(settings.link.uri)
+
+        val chat = valid("open_link", """{"link":"https://wa.me/919999999999?text=hi","sensitive":true,"reason":"Opens a chat"}""") as AgentAction.OpenLink
+        assertEquals("com.whatsapp", chat.link.packageName)
+        assertTrue(chat.sensitive)
+        assertNull((valid("open_link", """{"link":"https://example.com/page"}""") as AgentAction.OpenLink).link.packageName)
+        assertEquals("com.google.android.apps.maps", (valid("open_link", """{"link":"geo:0,0?q=pizza"}""") as AgentAction.OpenLink).link.packageName)
+
+        assertTrue(error("open_link", """{"link":"javascript:alert(1)"}""").contains("can't be opened"))
+        assertTrue(error("open_link", """{"link":"intent://scan/#Intent;scheme=zxing;end"}""").contains("can't be opened"))
+        assertTrue(error("open_link", """{"link":"bluetooth settings"}""").contains("must be"))
+        assertTrue(error("open_link", "{}").contains("link"))
     }
 
     @Test
@@ -116,9 +143,9 @@ class AgentToolsTest {
             val properties = schema.getJSONObject("properties")
             val required = schema.optJSONArray("required")
             for (i in 0 until (required?.length() ?: 0)) assertTrue(spec.name, properties.has(required!!.getString(i)))
-            val isAction = spec.name in setOf("open_app", "tap", "enter_text", "scroll", "scroll_to", "tap_point", "go_back", "go_home")
+            val isAction = spec.name in setOf("open_app", "open_link", "tap", "enter_text", "scroll", "scroll_to", "tap_point", "go_back", "go_home")
             assertEquals(spec.name, isAction, properties.has("sensitive") && properties.has("reason"))
         }
-        assertEquals(14, AgentTools.specs.size)
+        assertEquals(15, AgentTools.specs.size)
     }
 }

@@ -23,7 +23,7 @@ internal object AgentPrompt {
                 appendLine("- You may call up to 3 tools in one turn when each next step is certain without seeing the new screen, e.g. tap the Search tab, then enter_text with submit. Never batch a sensitive action.")
                 appendLine("- When an action should complete the request, add done_reply (the spoken reply) and done_if_visible (a short word or phrase that will be on the next screen only if it worked, e.g. the search words or the page title). Wakey checks the screen and ends the task without asking you again.")
                 appendLine("- Prefer the element list. If it lacks a control, a screenshot is attached (or call take_screenshot); then use tap_point with pixel coordinates in that screenshot.")
-                appendLine("- Open apps with open_app instead of looking for their icons.")
+                appendLine("- Open apps with open_app instead of looking for their icons. When a link lands on the screen the request needs (YouTube results, a Maps search, a Settings page, a wa.me chat, a product search), call open_link instead of tapping your way there.")
                 appendLine("- To search or type, call enter_text on the search box or search icon with submit=true; it taps the field itself, so don't tap it first.")
                 appendLine("- To find an item in a long list use scroll_to with its text, not repeated scrolls. In Settings, its search box is usually fastest.")
                 appendLine("- Finish as soon as the latest screen shows the request is done (e.g. results for the search are showing).")
@@ -34,7 +34,7 @@ internal object AgentPrompt {
                 appendLine("- Never try to get past the lock screen, a PIN, password or biometric prompt. Treat secure or blank screens as unreadable; don't guess what they show.")
             }
             ScreenAccess.Unavailable -> appendLine("- Call one tool per turn.").appendLine(
-                "- Screen control is off, so you cannot see or touch the screen: you can only open an app, set the flashlight, reply or ask. " +
+                "- Screen control is off, so you cannot see or touch the screen: you can only open an app or a link (open_link), set the flashlight, reply or ask. " +
                     "If the request needs more than opening one app, finish and tell the user to turn on Wakey screen control " +
                     "in Settings › Accessibility › Wakey for multi-step tasks.",
             )

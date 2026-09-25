@@ -308,3 +308,57 @@ internal object Shortcuts {
     /** Percent-encodes for a query string; spaces as %20 so `geo:` and `spotify:` URIs read them too. */
     private fun encode(query: String): String = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
 }
+
+/**
+ * Links the model asks for with open_link, checked and completed: only web pages, a few app
+ * schemes and Android settings actions are opened, and the app a link belongs to is named so the
+ * loop can wait for it.
+ */
+internal object AppLinks {
+    /** @throws IllegalArgumentException for a link Wakey won't open, with the reason for the model. */
+    fun parse(raw: String, app: String?): AppLink {
+        val link = raw.trim()
+        val name = app?.trim()?.ifEmpty { null }
+        SETTINGS_ACTION.matchEntire(link)?.let { match ->
+            // android.settings.WIFI_SETTINGS → "Wifi settings"
+            val title = match.groupValues[1].removeSuffix("_SETTINGS").lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+            return AppLink("Settings", "$title settings", "com.android.settings", link)
+        }
+        val scheme = link.substringBefore(':', "").lowercase()
+        require(scheme.isNotEmpty() && link.contains(':')) { "link must be an https URL, an app link such as geo: or market:, or an android.settings action." }
+        require(scheme in SCHEMES) { "Links with \"$scheme:\" can't be opened. Use https, geo, market, spotify, tel, mailto, sms or whatsapp." }
+        val host = if (scheme == "http" || scheme == "https") link.substringAfter("://").substringBefore('/').substringBefore('?').lowercase().removePrefix("www.").removePrefix("m.") else null
+        val known = if (host != null) HOSTS.entries.firstOrNull { (suffix, _) -> host == suffix || host.endsWith(".$suffix") }?.value else SCHEME_APPS[scheme]
+        val label = name ?: known?.first ?: host ?: scheme
+        return AppLink(label, "$label link", known?.second, "android.intent.action.VIEW", link)
+    }
+
+    private val SETTINGS_ACTION = Regex("""^android\.settings\.([A-Z][A-Z0-9_]+)$""")
+    private val SCHEMES = setOf("https", "http", "geo", "market", "spotify", "tel", "mailto", "sms", "smsto", "whatsapp")
+
+    /** Web hosts that an installed app takes over, so the loop knows which app to wait for. */
+    private val HOSTS: Map<String, Pair<String, String>> = mapOf(
+        "youtube.com" to ("YouTube" to "com.google.android.youtube"),
+        "youtu.be" to ("YouTube" to "com.google.android.youtube"),
+        "maps.google.com" to ("Maps" to "com.google.android.apps.maps"),
+        "maps.app.goo.gl" to ("Maps" to "com.google.android.apps.maps"),
+        "play.google.com" to ("Play Store" to "com.android.vending"),
+        "wa.me" to ("WhatsApp" to "com.whatsapp"),
+        "api.whatsapp.com" to ("WhatsApp" to "com.whatsapp"),
+        "instagram.com" to ("Instagram" to "com.instagram.android"),
+        "open.spotify.com" to ("Spotify" to "com.spotify.music"),
+        "amazon.in" to ("Amazon" to "in.amazon.mShop.android.shopping"),
+        "flipkart.com" to ("Flipkart" to "com.flipkart.android"),
+        "facebook.com" to ("Facebook" to "com.facebook.katana"),
+        "t.me" to ("Telegram" to "org.telegram.messenger"),
+        "twitter.com" to ("X" to "com.twitter.android"),
+        "x.com" to ("X" to "com.twitter.android"),
+        "linkedin.com" to ("LinkedIn" to "com.linkedin.android"),
+    )
+    private val SCHEME_APPS: Map<String, Pair<String, String>> = mapOf(
+        "geo" to ("Maps" to "com.google.android.apps.maps"),
+        "market" to ("Play Store" to "com.android.vending"),
+        "spotify" to ("Spotify" to "com.spotify.music"),
+        "whatsapp" to ("WhatsApp" to "com.whatsapp"),
+    )
+}

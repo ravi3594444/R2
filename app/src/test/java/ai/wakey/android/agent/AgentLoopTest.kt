@@ -318,6 +318,27 @@ class AgentLoopTest {
     }
 
     @Test
+    fun theModelCanJumpToAScreenByLink() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, emptyMap()).apply { linked["com.google.android.youtube"] = youTubeResults }
+        val model = ScriptedModel.of(
+            toolCall(
+                "open_link",
+                """{"link":"https://www.youtube.com/results?search_query=lofi%20music","app":"YouTube","done_reply":"Here you go.","done_if_visible":"lofi music"}""",
+            ),
+        )
+
+        val result = agentLoop(model, screen, apps).run("I want some lofi music from YouTube", RecordingListener())
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("Here you go.", result.reply)
+        assertEquals(1, result.llmCalls)
+        assertEquals("https://www.youtube.com/results?search_query=lofi%20music", apps.links.single().uri)
+        assertEquals("com.google.android.youtube", apps.links.single().packageName)
+        assertEquals(listOf("open_link"), model.requests[0].tools.map { it.name }.filter { it == "open_link" })
+    }
+
+    @Test
     fun theFlashlightIsSetDirectlyAndEndsTheRun() = runTest {
         val screen = FakeScreen(launcher)
         val apps = FakeApps(screen, mapOf("Settings" to settingsMain))
@@ -427,7 +448,7 @@ class AgentLoopTest {
         val result = agentLoop(model, null, apps).run("open Chrome and read the news", RecordingListener())
 
         assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(listOf("open_app", "set_flashlight", "finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
+        assertEquals(listOf("open_app", "open_link", "set_flashlight", "finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
         assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("Screen control is off"))
         assertEquals("Request: open Chrome and read the news\nReply language: English\n$TIME_LINE", (model.requests[0].messages.last() as ChatMessage.User).text)
         assertTrue((model.requests[1].messages.last() as ChatMessage.Tool).content.contains("can't be checked"))

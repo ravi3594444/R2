@@ -24,8 +24,12 @@ internal sealed interface AgentAction {
 
     data class OpenApp(val name: String, override val sensitive: Boolean, override val reason: String?) : ScreenChanging
 
-    /** A deep link the loop opens itself (never a model call): see [Shortcuts]. */
-    data class OpenLink(val link: AppLink) : ScreenChanging
+    /** A deep link: from [Shortcuts] for common requests, or the model's own open_link call. */
+    data class OpenLink(
+        val link: AppLink,
+        override val sensitive: Boolean = false,
+        override val reason: String? = null,
+    ) : ScreenChanging
 
     data class Tap(
         val target: ElementTarget,
@@ -89,6 +93,7 @@ internal sealed interface ToolValidation {
 /** The agent's tool definitions and the validation every model tool call goes through. */
 internal object AgentTools {
     const val OPEN_APP = "open_app"
+    const val OPEN_LINK = "open_link"
     const val READ_SCREEN = "read_screen"
     const val TAP = "tap"
     const val ENTER_TEXT = "enter_text"
@@ -114,6 +119,13 @@ internal object AgentTools {
             OPEN_APP,
             "Open an installed app by name. Use this instead of looking for app icons.",
             schema(""""name":{"type":"string"},$SAFETY_PROPS""", "name"),
+        ),
+        ToolSpec(
+            OPEN_LINK,
+            "Jump straight to a screen by link instead of tapping there: an https URL (YouTube results, a Maps search, an Amazon " +
+                "or Instagram page, a wa.me chat), a geo:/market:/spotify:/tel:/mailto:/sms: link, or an Android settings action " +
+                "such as android.settings.WIFI_SETTINGS. app: the app it should open in, if known.",
+            schema(""""link":{"type":"string"},"app":{"type":"string"},$DONE_PROPS,$SAFETY_PROPS""", "link"),
         ),
         ToolSpec(READ_SCREEN, "Read the current screen again, e.g. after content finished loading.", schema("")),
         ToolSpec(
@@ -178,7 +190,7 @@ internal object AgentTools {
     fun allowed(access: ScreenAccess, canSchedule: Boolean = true): Set<String> {
         val names = when (access) {
             ScreenAccess.Available -> specs.mapTo(LinkedHashSet()) { it.name }
-            ScreenAccess.Unavailable -> linkedSetOf(OPEN_APP, SET_FLASHLIGHT, FINISH, ASK_USER, SCHEDULE_TASK)
+            ScreenAccess.Unavailable -> linkedSetOf(OPEN_APP, OPEN_LINK, SET_FLASHLIGHT, FINISH, ASK_USER, SCHEDULE_TASK)
             ScreenAccess.Locked -> linkedSetOf(SET_FLASHLIGHT, FINISH, ASK_USER, SCHEDULE_TASK)
         }
         if (!canSchedule) names.remove(SCHEDULE_TASK)
@@ -240,6 +252,14 @@ internal object AgentTools {
         val reason = args.string("reason")?.trim()?.ifEmpty { null }
         return when (tool) {
             OPEN_APP -> AgentAction.OpenApp(args.requiredText("name"), sensitive, reason)
+            OPEN_LINK -> {
+                val link = try {
+                    AppLinks.parse(args.requiredText("link"), args.string("app"))
+                } catch (e: IllegalArgumentException) {
+                    throw InvalidArgument(e.message.orEmpty())
+                }
+                AgentAction.OpenLink(link, sensitive, reason)
+            }
             READ_SCREEN -> AgentAction.ReadScreen
             TAKE_SCREENSHOT -> AgentAction.TakeScreenshot
             TAP -> {
