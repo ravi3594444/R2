@@ -6,6 +6,7 @@ import ai.wakey.android.llm.LlmException
 import ai.wakey.android.llm.ToolCall
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -154,6 +155,55 @@ class AgentLoopTest {
         job.join()
 
         assertEquals(listOf("tap Bluetooth"), screen.log)
+    }
+
+    @Test
+    fun aRunStartedEarlyThinksButActsOnlyAfterTheGoAhead() = runTest {
+        val screen = FakeScreen(settingsMain).apply { transitions["Bluetooth"] = bluetooth }
+        val model = ScriptedModel.of(
+            toolCall("tap", """{"element_id":3}"""),
+            toolCall("finish", """{"reply":"Bluetooth settings are open."}"""),
+        )
+        val listener = RecordingListener()
+        val waiting = CompletableDeferred<Unit>()
+        val confirmed = CompletableDeferred<Unit>()
+        val run = async {
+            agentLoop(model, screen).run("open bluetooth", listener) {
+                waiting.complete(Unit)
+                confirmed.await()
+            }
+        }
+        waiting.await()
+        // The first step is chosen, but nothing has happened on the phone or in Wakey's UI.
+        assertEquals(1, model.requests.size)
+        assertTrue(screen.log.isEmpty())
+        assertTrue(listener.actions.isEmpty())
+
+        confirmed.complete(Unit)
+        val result = run.await()
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals(listOf("tap Bluetooth"), screen.log)
+        assertEquals(2, model.requests.size)
+    }
+
+    @Test
+    fun droppingARunBeforeTheGoAheadLeavesThePhoneAlone() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, mapOf("Settings" to settingsMain))
+        val waiting = CompletableDeferred<Unit>()
+        // "Open Settings and …" opens Settings without a model call; that first step waits too.
+        val job = launch {
+            agentLoop(ScriptedModel.of(), screen, apps).run("open Settings and find Bluetooth", RecordingListener()) {
+                waiting.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        waiting.await()
+        job.cancel()
+        job.join()
+
+        assertTrue(apps.opened.isEmpty())
+        assertTrue(screen.log.isEmpty())
     }
 
     @Test

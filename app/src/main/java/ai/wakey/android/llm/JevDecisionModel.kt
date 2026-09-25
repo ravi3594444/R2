@@ -31,6 +31,7 @@ class JevDecisionModel(
 ) : DecisionModel {
     // A decision that is slower than an LLM call is worthless, so fail fast and let the LLM take over.
     private val client = http.newBuilder().callTimeout(CALL_TIMEOUT_S, TimeUnit.SECONDS).build()
+    private val warmer = ConnectionWarmer(client)
 
     override suspend fun choose(state: String, instructions: String, options: Map<String, String>): Decision {
         require(options.size >= 2) { "A choice needs at least two options." }
@@ -52,6 +53,15 @@ class JevDecisionModel(
         val latencyMs = (System.nanoTime() - started) / 1_000_000
         if (code !in 200..299) throw DecisionException(errorMessage(code, text))
         return withContext(Dispatchers.Default) { parseDecision(text, options.keys, latencyMs) }
+    }
+
+    override fun warmUp() {
+        val key = apiKey()?.trim().orEmpty()
+        if (key.isEmpty()) return
+        warmer.warm(
+            (baseUrl().trim().trimEnd('/') + "/models").toHttpUrlOrNull(),
+            mapOf("Authorization" to "Bearer $key", "User-Agent" to "Wakey/${BuildConfig.VERSION_NAME}"),
+        )
     }
 
     override suspend fun testConnection(): String {

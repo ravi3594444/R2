@@ -42,6 +42,12 @@ interface SttListener {
     fun onConnected(connectMs: Long) {}
     fun onSpeechStarted() {}
 
+    /** The provider thinks the turn is probably over ([transcript] so far); [onTranscript] with isFinal confirms it. */
+    fun onEndLikely(transcript: String) {}
+
+    /** The user went on talking after [onEndLikely]. */
+    fun onTurnResumed() {}
+
     /**
      * [isFinal] is true exactly once per session, for the end-of-turn transcript. After a final
      * transcript the session closes its stream by itself. [transcriptionMs] is the time from the

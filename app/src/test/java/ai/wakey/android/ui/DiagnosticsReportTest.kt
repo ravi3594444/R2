@@ -48,6 +48,13 @@ class DiagnosticsReportTest {
     }
 
     @Test
+    fun `screen control that is on but not running is called out`() {
+        val stuck = setup.copy(screenControl = true, screenControlRunning = false)
+        val report = diagnosticsReport(device, stuck, WakeySettings(), AssistantUiState(), WakeStats(), micMuted = false)
+        assertTrue(report, "screen control: yes (on, but NOT running)" in report)
+    }
+
+    @Test
     fun `a muted microphone is called out`() {
         val report = diagnosticsReport(device, setup, WakeySettings(), AssistantUiState(wakeServiceRunning = true), WakeStats(), micMuted = true)
         assertTrue(report, "MUTED by Android" in report)

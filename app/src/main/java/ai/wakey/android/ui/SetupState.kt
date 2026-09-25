@@ -1,5 +1,6 @@
 package ai.wakey.android.ui
 
+import ai.wakey.android.WakeyAccessibilityService
 import ai.wakey.android.accessibility.AccessibilityStatus
 import ai.wakey.android.service.BatteryOptimization
 import android.Manifest
@@ -38,6 +39,8 @@ data class SetupStatus(
     val defaultAssistant: Boolean,
     /** Scheduled tasks, reminders and alarms fire on time (Android 12 lets users revoke this). */
     val exactAlarms: Boolean = true,
+    /** Screen control is not only switched on but connected: it draws the floating button and acts on screens. */
+    val screenControlRunning: Boolean = true,
 ) {
     /** The main screen's "Setup needed" card covers only what blocks voice or phone control. */
     val needsAttention: Boolean get() = !microphone || !screenControl
@@ -51,6 +54,7 @@ data class SetupStatus(
                 ?.isIgnoringBatteryOptimizations(context.packageName) ?: true,
             defaultAssistant = context.getSystemService(RoleManager::class.java)?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true,
             exactAlarms = context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: true,
+            screenControlRunning = WakeyAccessibilityService.instance != null,
         )
     }
 }

@@ -4,9 +4,9 @@ import ai.wakey.android.config.WakeMode
 import ai.wakey.android.config.WakeySettings
 import ai.wakey.android.core.AssistantController
 import ai.wakey.android.ui.components.NoteText
+import ai.wakey.android.ui.components.RadioRow
 import ai.wakey.android.ui.components.SectionCard
 import ai.wakey.android.ui.components.SwitchRow
-import ai.wakey.android.ui.components.monoSegmentColors
 import ai.wakey.android.ui.normalizeWakePhrase
 import ai.wakey.android.wake.EncodedKeyword
 import androidx.compose.foundation.layout.Arrangement
@@ -23,10 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Hearing
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -87,7 +83,14 @@ fun WakeWordSection(controller: AssistantController, settings: WakeySettings) {
         subtitle = "How you start talking to Wakey hands-free.",
     ) {
         WakeModeSelector(settings.wakeMode) { mode -> controller.updateSettings { it.copy(wakeMode = mode) } }
-        if (settings.wakeMode == WakeMode.HeyCommand) {
+        if (settings.wakeMode == WakeMode.Jarvis) {
+            NoteText(
+                "Say “Hey Jarvis” and your request: “Hey Jarvis, open YouTube”. This uses openWakeWord's " +
+                    "ready-made model, trained for just this phrase, so it catches it more reliably than a phrase of " +
+                    "your own, even when you speak softly. Borderline sounds (“hey Travis”) are checked with Deepgram first.",
+            )
+            NoteText("Model: openWakeWord “hey jarvis” by David Scripka, CC BY-NC-SA 4.0, for non-commercial use.")
+        } else if (settings.wakeMode == WakeMode.HeyCommand) {
             NoteText(
                 "Say “Hey” and your request in one go: “Hey, open Instagram”, “Hey, torch jalao”. " +
                     "Wakey acts only when a command follows “hey”, so “hey, how are you?” is ignored. " +
@@ -119,17 +122,20 @@ fun WakeWordSection(controller: AssistantController, settings: WakeySettings) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** The three ways to wake Wakey, most common first. */
 @Composable
 private fun WakeModeSelector(selected: WakeMode, onSelect: (WakeMode) -> Unit) {
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-        WakeMode.entries.forEachIndexed { index, mode ->
-            SegmentedButton(
+    Column {
+        for (mode in listOf(WakeMode.Phrase, WakeMode.Jarvis, WakeMode.HeyCommand)) {
+            RadioRow(
+                title = mode.label,
+                subtitle = when (mode) {
+                    WakeMode.Phrase -> "Any phrase you choose, like “Hey Wakey”."
+                    WakeMode.Jarvis -> "A model trained for this one phrase: the most reliable."
+                    WakeMode.HeyCommand -> "“Hey” and the request in one go."
+                },
                 selected = mode == selected,
                 onClick = { onSelect(mode) },
-                shape = SegmentedButtonDefaults.itemShape(index, WakeMode.entries.size),
-                colors = monoSegmentColors(),
-                label = { Text(mode.label, maxLines = 1) },
             )
         }
     }

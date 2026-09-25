@@ -49,7 +49,8 @@ internal fun diagnosticsReport(
         appendLine("Phone: ${device.manufacturer} ${device.model}, Android ${device.androidRelease} (API ${device.sdk})")
         appendLine("Digital assistant app is Wakey: ${yes(setup.defaultAssistant)}")
         appendLine("Background use allowed (battery unrestricted): ${yes(setup.batteryUnrestricted)}")
-        appendLine("Microphone permission: ${yes(setup.microphone)}; notifications: ${yes(setup.notifications)}; screen control: ${yes(setup.screenControl)}")
+        val running = if (setup.screenControl && !setup.screenControlRunning) " (on, but NOT running)" else ""
+        appendLine("Microphone permission: ${yes(setup.microphone)}; notifications: ${yes(setup.notifications)}; screen control: ${yes(setup.screenControl)}$running")
         appendLine(
             "Listen for wake word switch: ${if (settings.wakeListeningWanted) "on" else "off"}; service running: ${yes(state.wakeServiceRunning)}; " +
                 "wake word running: ${yes(state.wakeWordEnabled)}",

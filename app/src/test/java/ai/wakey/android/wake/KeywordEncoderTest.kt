@@ -160,7 +160,7 @@ class KeywordEncoderTest {
     }
 
     private companion object {
-        /** The build extracts the model here (Gradle task extractKwsModel); the desktop copy is a fallback. */
+        /** The build extracts the model here (Gradle task prepareModelAssets); the desktop copy is a fallback. */
         val MODEL_DIRS = listOf(
             "build/generated/wakeyAssets/kws",
             "/opt/wakey-deps/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01-mobile",

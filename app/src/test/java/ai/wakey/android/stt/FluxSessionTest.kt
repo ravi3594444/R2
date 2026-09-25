@@ -65,6 +65,27 @@ class FluxSessionTest {
     }
 
     @Test
+    fun `an eager end of turn is only a hint, and the turn goes on after it`() {
+        open()
+        server.onOpen()
+        server.onText(turn("StartOfTurn", ""))
+        server.onText(turn("EagerEndOfTurn", "set an alarm"))
+        server.onText(turn("TurnResumed", "set an alarm"))
+        server.onText(turn("Update", "set an alarm for six thirty"))
+        server.onText(turn("EagerEndOfTurn", "set an alarm for six thirty"))
+        server.onText(turn("EndOfTurn", "set an alarm for six thirty", lastWordEnd = 0.9))
+        settle()
+        assertEquals(
+            listOf(
+                "connected 0", "speech", "partial 'set an alarm'", "likely 'set an alarm'", "resumed",
+                "partial 'set an alarm for six thirty'", "likely 'set an alarm for six thirty'",
+                "final 'set an alarm for six thirty' [en]",
+            ),
+            calls.log.filterNot { it == "closed" },
+        )
+    }
+
+    @Test
     fun `drops the oldest held audio beyond 15 s`() {
         val session = open()
         session.push(200)
@@ -466,6 +487,14 @@ class FluxSessionTest {
 
         override fun onSpeechStarted() {
             log += "speech"
+        }
+
+        override fun onEndLikely(transcript: String) {
+            log += "likely '$transcript'"
+        }
+
+        override fun onTurnResumed() {
+            log += "resumed"
         }
 
         override fun onTranscript(text: String, isFinal: Boolean, languages: List<String>, transcriptionMs: Long?) {

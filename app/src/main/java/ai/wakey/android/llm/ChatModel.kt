@@ -9,6 +9,9 @@ interface ChatModel {
 
     /** A tiny, bounded request that checks endpoint, model id and key. Returns a readable summary. */
     suspend fun testConnection(): String
+
+    /** Opens the connection ahead of a request, in the background, so the request doesn't wait for it. */
+    fun warmUp() {}
 }
 
 data class ChatRequest(

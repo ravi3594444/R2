@@ -82,15 +82,28 @@ class AgentLoop internal constructor(
     /**
      * Works towards [goal] until the model finishes or asks, or a step, time or safety limit stops it.
      * A [deferred] goal was queued or scheduled earlier and is due now; it can't be scheduled again.
+     * A run started before the user surely finished speaking passes [goAhead]: it reads the screen
+     * and asks the model, but runs no tool until [goAhead] returns, so dropping it changes nothing.
      */
-    suspend fun run(goal: String, listener: AgentListener, deferred: Boolean = false): AgentResult {
+    suspend fun run(
+        goal: String,
+        listener: AgentListener,
+        deferred: Boolean = false,
+        goAhead: (suspend () -> Unit)? = null,
+    ): AgentResult {
         val maxSteps = settings().maxAgentSteps.coerceIn(1, WakeySettings.MAX_AGENT_STEPS_LIMIT)
-        val session = Session(goal.trim(), listener, maxSteps, deferred)
+        val session = Session(goal.trim(), listener, maxSteps, deferred, goAhead)
         return withTimeoutOrNull(timeoutMs) { session.run() }
             ?: session.result(AgentStatus.Timeout, session.replies.timeout())
     }
 
-    private inner class Session(val goal: String, val listener: AgentListener, val maxSteps: Int, val deferred: Boolean) {
+    private inner class Session(
+        val goal: String,
+        val listener: AgentListener,
+        val maxSteps: Int,
+        val deferred: Boolean,
+        private var goAhead: (suspend () -> Unit)?,
+    ) {
         val replies = AgentPrompt.Replies.forGoal(goal)
         private val messages = mutableListOf<ChatMessage>()
         private var access = ScreenAccess.Unavailable
@@ -392,8 +405,16 @@ class AgentLoop internal constructor(
             shotSize = shot.width to shot.height
         }
 
+        /** Before the first tool runs: a run started early waits here until its request is confirmed. */
+        private suspend fun awaitGoAhead() {
+            val wait = goAhead ?: return
+            goAhead = null
+            wait()
+        }
+
         /** Runs one validated action; returns the final result if it ends the run. */
         private suspend fun perform(action: AgentAction, call: ToolCall): AgentResult? {
+            awaitGoAhead()
             when (action) {
                 is AgentAction.Finish -> {
                     val correction = if (finishChecked) null else FinishCheck.unopenedTarget(goal, observation)
@@ -449,6 +470,7 @@ class AgentLoop internal constructor(
         }
 
         private suspend fun act(action: AgentAction.ScreenChanging, call: ToolCall): AgentResult? {
+            awaitGoAhead()
             lastOutcome = null
             SafetyPolicy.review(action, observation?.appLabel)?.let { request ->
                 val approved = listener.confirm(request)

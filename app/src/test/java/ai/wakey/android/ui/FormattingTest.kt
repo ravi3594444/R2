@@ -68,6 +68,13 @@ class FormattingTest {
     }
 
     @Test
+    fun summaryShowsTheAgentHeadStart() {
+        val timings = TurnTimings(InputSource.WakeWord, transcriptionMs = 1_300, headStartMs = 600, firstActionMs = 150)
+        assertEquals("transcript 1.3 s · head start 600 ms · first action 150 ms", formatTimingSummary(timings))
+        assertEquals("600 ms", timingDetails(timings).toMap()["Agent head start"])
+    }
+
+    @Test
     fun summaryShowsOnlyMeasuredFields() {
         assertEquals("first action 40 ms", formatTimingSummary(TurnTimings(InputSource.Text, firstActionMs = 40, route = "fast")))
         assertEquals("", formatTimingSummary(TurnTimings(InputSource.Text)))
@@ -138,6 +145,9 @@ class FormattingTest {
     @Test
     fun floatingButtonNoteAsksForScreenControlWhenNeeded() {
         assertEquals("Turn on Wakey screen control to show it.", floatingButtonNote(enabled = true, screenControl = false))
-        assertTrue(floatingButtonNote(enabled = false, screenControl = false).startsWith("Tap it in any app"))
+        assertTrue(floatingButtonNote(enabled = false, screenControl = false).startsWith("A small button over your other apps"))
+        // It never shows inside Wakey, where the switch is, so the note says where it went.
+        assertTrue(floatingButtonNote(enabled = true, screenControl = true).startsWith("On: it shows over your other apps, not inside Wakey"))
+        assertTrue(floatingButtonNote(enabled = true, screenControl = true, running = false).startsWith("Screen control is on but not running"))
     }
 }

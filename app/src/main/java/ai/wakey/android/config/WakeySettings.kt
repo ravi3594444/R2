@@ -13,6 +13,9 @@ enum class WakeMode(val label: String) {
 
     /** Say the wake phrase ([WakeySettings.wakePhrase]), then the request. */
     Phrase("Wake phrase"),
+
+    /** openWakeWord's ready-made "Hey Jarvis" model: one fixed phrase, spotted more reliably. */
+    Jarvis("“Hey Jarvis”"),
 }
 
 /** Speech-to-text language behaviour. [hints] are Deepgram Flux `language_hint` values. */
@@ -56,11 +59,16 @@ data class WakeySettings(
     val floatingButton: Boolean = false,
 ) {
     /** What the user says to wake Wakey, for captions and notifications: "Hey" or the wake phrase. */
-    val spokenWake: String get() = if (wakeMode == WakeMode.HeyCommand) HEY else wakePhrase
+    val spokenWake: String get() = when (wakeMode) {
+        WakeMode.HeyCommand -> HEY
+        WakeMode.Jarvis -> JARVIS
+        WakeMode.Phrase -> wakePhrase
+    }
 
     companion object {
         const val DEFAULT_WAKE_PHRASE = "Hey Wakey"
         const val HEY = "Hey"
+        const val JARVIS = "Hey Jarvis"
         const val DEFAULT_DEEPGRAM_VOICE = "flux-meena-en"
         const val DEFAULT_STT_MODEL = "flux-general-multi"
         const val DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"

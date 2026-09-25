@@ -153,10 +153,20 @@ class DeepgramFluxStt internal constructor(
          *   unsure (mumbled or code-mixed speech).
          * - In background chatter neither fires, so [FluxSession] ends a heard request by hand.
          * Nova-3 (multi, en-IN, hi) was also measured: similar accuracy, but its silence endpointing
-         * cut commands at pauses. Eager end-of-turn stays off because nothing speculates on unfinished turns.
+         * cut commands at pauses.
          */
         const val EOT_THRESHOLD = "0.85"
         const val EOT_TIMEOUT_MS = 1_500
+
+        /**
+         * Flux sends `EagerEndOfTurn` once it is this sure the turn is over, before `EndOfTurn` at
+         * [EOT_THRESHOLD], and `TurnResumed` if the user goes on. At the first, Wakey shows it is
+         * working and starts the agent, which reads the screen and asks the model but acts only once
+         * `EndOfTurn` confirms the same words; at the second it drops that run and listens on. Only
+         * `EndOfTurn` ends the turn, so nothing is cut short. Deepgram suggests 0.4 with a 0.7
+         * end-of-turn threshold; it must not be above [EOT_THRESHOLD].
+         */
+        const val EAGER_EOT_THRESHOLD = "0.6"
 
         private const val TEST_MODEL = "flux-general-multi"
         private const val TEST_TIMEOUT_MS = 10_000L
@@ -169,6 +179,8 @@ class DeepgramFluxStt internal constructor(
 internal data class FluxTurnTuning(
     val eotThreshold: String = DeepgramFluxStt.EOT_THRESHOLD,
     val eotTimeoutMs: Int = DeepgramFluxStt.EOT_TIMEOUT_MS,
+    /** Null leaves eager end-of-turn off. */
+    val eagerEotThreshold: String? = DeepgramFluxStt.EAGER_EOT_THRESHOLD,
 )
 
 /**
@@ -186,6 +198,7 @@ internal fun fluxListenUrl(endpoint: HttpUrl, config: SttConfig, turns: FluxTurn
         addQueryParameter("sample_rate", config.sampleRate.toString())
         addQueryParameter("eot_threshold", turns.eotThreshold)
         addQueryParameter("eot_timeout_ms", turns.eotTimeoutMs.toString())
+        turns.eagerEotThreshold?.let { addQueryParameter("eager_eot_threshold", it) }
         if ("-multi" in config.model) {
             config.languageHints.cleaned().forEach { addQueryParameter("language_hint", it) }
         }

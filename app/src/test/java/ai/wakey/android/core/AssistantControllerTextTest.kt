@@ -31,6 +31,14 @@ class AssistantControllerTextTest {
     }
 
     @Test
+    fun aHeadStartIsKeptOnlyForTheSameWords() {
+        assertTrue(AssistantController.sameWords("Open YouTube and search lo-fi.", "open youtube and search lo fi"))
+        assertTrue(AssistantController.sameWords("यूट्यूब खोलो।", "यूट्यूब खोलो"))
+        assertFalse(AssistantController.sameWords("Set an alarm.", "Set an alarm for six thirty."))
+        assertFalse(AssistantController.sameWords("", "open YouTube"))
+    }
+
+    @Test
     fun leavesCommandsWithoutWakePhraseAlone() {
         assertEquals("turn on the flashlight", strip("turn on the flashlight"))
         assertEquals("open Settings and find Bluetooth", strip("open Settings and find Bluetooth"))

@@ -59,8 +59,23 @@ val kwsTarball = verifiedDownload(
     File(depsCache, "$kwsModelName.tar.bz2"),
 )
 
+// openWakeWord's "hey jarvis" model and the two feature models it runs on, in LiteRT format
+// (github.com/dscripka/openWakeWord). The pre-trained models are CC BY-NC-SA 4.0: non-commercial use.
+val owwRelease = "v0.5.1"
+val owwModels = mapOf(
+    "melspectrogram.tflite" to "96fa0adccb6e8cf95cb14465409a1a2898ee4a96a85bb9ed3c7eb0e68bf163e8",
+    "embedding_model.tflite" to "c0aea21eb84a4ce90a08c870da41b7a7173b45269e6a3207c71d67c40f3a59d8",
+    "hey_jarvis_v0.1.tflite" to "14bff778604985e1b5c19f0f7bbe477a69cf281d8db34b232b3b972411f710e2",
+).map { (name, sha256) ->
+    verifiedDownload(
+        "https://github.com/dscripka/openWakeWord/releases/download/$owwRelease/$name",
+        sha256,
+        File(depsCache, "openwakeword-$owwRelease/$name"),
+    )
+}
+
 val generatedAssets = layout.buildDirectory.dir("generated/wakeyAssets")
-val extractKwsModel by tasks.registering(Copy::class) {
+val prepareModelAssets by tasks.registering(Copy::class) {
     from(tarTree(resources.bzip2(kwsTarball))) {
         include("$kwsModelName/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
         include("$kwsModelName/decoder-epoch-12-avg-2-chunk-16-left-64.onnx")
@@ -70,6 +85,7 @@ val extractKwsModel by tasks.registering(Copy::class) {
         eachFile { path = "kws/$name" }
         includeEmptyDirs = false
     }
+    from(owwModels) { into("oww") }
     into(generatedAssets)
 }
 
@@ -100,8 +116,8 @@ android {
         applicationId = "ai.wakey.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.3.4-jev"
+        versionCode = 11
+        versionName = "0.3.5-jev"
         buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(""))
         buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(""))
         buildConfigField("String", "SEED_AIMLAPI_API_KEY", quoted(""))
@@ -167,10 +183,12 @@ android {
     }
 }
 
-tasks.named("preBuild") { dependsOn(extractKwsModel) }
+tasks.named("preBuild") { dependsOn(prepareModelAssets) }
 
 dependencies {
     implementation(files(sherpaAar))
+    // Runs the "Hey Jarvis" wake word model.
+    implementation("com.google.ai.edge.litert:litert:1.0.1")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)

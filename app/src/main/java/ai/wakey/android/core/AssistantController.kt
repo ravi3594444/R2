@@ -4,6 +4,7 @@ import ai.wakey.android.WakeyApp
 import ai.wakey.android.accessibility.AccessibilityStatus
 import ai.wakey.android.agent.AgentListener
 import ai.wakey.android.agent.AgentLoop
+import ai.wakey.android.agent.AgentResult
 import ai.wakey.android.agent.AgentStatus
 import ai.wakey.android.agent.ConfirmationRequest
 import ai.wakey.android.agent.DeviceActions
@@ -55,10 +56,13 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -121,6 +125,7 @@ class AssistantController(
     /** The STT session opened to hear a spoken yes/no, closed when the confirmation resolves. */
     private var confirmSession: SttSession? = null
     private var turn: TurnClock? = null
+    private var headStart: HeadStart? = null
 
     /** [sessionToken] of the session confirming an unsure wake detection, until it is confirmed. */
     private var checkToken = NO_CHECK
@@ -156,7 +161,7 @@ class AssistantController(
             settingsRepo.settings.map { Triple(it.wakeMode, it.wakePhrase, it.wakeSensitivity) }.distinctUntilChanged().drop(1)
                 .collect { (mode, phrase, sensitivity) ->
                     if (_state.value.wakeWordEnabled) {
-                        runCatching { audio.updateWakePhrase(phrase, sensitivity, hey = mode == WakeMode.HeyCommand) }
+                        runCatching { audio.updateWakePhrase(phrase, sensitivity, mode) }
                             .onSuccess { setStatus("Now listening for “${settingsRepo.current.spokenWake}”.") }
                             .onFailure { setStatus("Wake phrase not applied: ${it.message}", error = true) }
                     }
@@ -233,6 +238,9 @@ class AssistantController(
      */
     fun setFloatingButton(context: Context, enabled: Boolean) {
         settingsRepo.update { it.copy(floatingButton = enabled) }
+        // It never shows over Wakey's own screens, where the switch is, so say where to find it.
+        if (enabled && AccessibilityStatus.isEnabled(context)) setStatus(FLOATING_BUTTON_ON)
+        else if (_state.value.statusMessage == FLOATING_BUTTON_ON) setStatus(null)
         when {
             // The button is drawn by screen control; until that's on, [restoreWakeListening] starts the service later.
             enabled && !_state.value.wakeServiceRunning && AccessibilityStatus.isEnabled(context) -> WakeService.start(context)
@@ -291,13 +299,13 @@ class AssistantController(
     private fun startWakeWord(): Boolean {
         val s = settingsRepo.current
         return try {
-            audio.startWakeListening(s.wakePhrase, s.wakeSensitivity, hey = s.wakeMode == WakeMode.HeyCommand, onWake = ::onWakeDetected)
+            audio.startWakeListening(s.wakePhrase, s.wakeSensitivity, s.wakeMode, onWake = ::onWakeDetected)
             _state.update {
                 it.copy(wakeWordEnabled = true, phase = if (it.phase == AssistantPhase.Idle) AssistantPhase.WakeListening else it.phase)
             }
             setStatus(
                 if (s.wakeMode == WakeMode.HeyCommand) "Say “Hey” and your request, like “Hey, open YouTube”."
-                else "Say “${s.wakePhrase}” followed by your request.",
+                else "Say “${s.spokenWake}” followed by your request.",
             )
             true
         } catch (e: Exception) {
@@ -361,13 +369,16 @@ class AssistantController(
         checkToken = NO_CHECK
         _wakeStats.update { it.copy(checksConfirmed = it.checksConfirmed + 1) }
         playWakeSound()
-        prewarmReplyVoice()
+        warmUp()
         _state.update { it.copy(phase = AssistantPhase.Hearing, liveTranscript = "", statusMessage = null, statusIsError = false) }
     }
 
-    private fun prewarmReplyVoice() {
+    /** While the user talks, opens connections to what the request will need: the reply voice and the models. */
+    private fun warmUp() {
         val s = settingsRepo.current
         if (s.speakReplies && s.ttsEngine == TtsEngine.Deepgram) speaker.deepgram.prewarmConnection()
+        if (secrets.has(SecretKind.LlmApiKey)) chatModel.warmUp()
+        if (s.useFastDecisions && secrets.has(SecretKind.DecisionApiKey)) decisionModel.warmUp()
     }
 
     /** Not the wake phrase (or nothing heard in time): close the stream without a word. */
@@ -477,6 +488,9 @@ class AssistantController(
         }
         val clock = TurnClock(source, SystemClock.elapsedRealtime(), wake?.detectionLatencyMs)
         if (confirmation == null) turn = clock
+        val stripPhrase = if (s.wakeMode == WakeMode.HeyCommand) HEY_STRIP else s.spokenWake
+        // What Flux took for the whole request when it said the turn was probably over.
+        var likelyRequest: String? = null
         val token = ++sessionToken
         checkToken = if (check) token else NO_CHECK
         if (!check) {
@@ -500,7 +514,7 @@ class AssistantController(
                     clock.lastEventAt = SystemClock.elapsedRealtime()
                     if (checkToken == token) {
                         val verdict = if (s.wakeMode == WakeMode.HeyCommand) WakeTranscript.checkHeyCommand(text, isFinal)
-                        else WakeTranscript.check(text, s.wakePhrase, isFinal)
+                        else WakeTranscript.check(text, s.spokenWake, isFinal)
                         when (verdict) {
                             WakeTranscript.Verdict.Undecided -> return@post
                             WakeTranscript.Verdict.NotHeard -> {
@@ -510,15 +524,23 @@ class AssistantController(
                             WakeTranscript.Verdict.Heard -> confirmCheck()
                         }
                     }
-                    val cleaned = stripWakePhrase(text, if (s.wakeMode == WakeMode.HeyCommand) HEY_STRIP else s.wakePhrase)
+                    val cleaned = stripWakePhrase(text, stripPhrase)
                     if (!isFinal) {
                         if (cleaned.isNotBlank()) clock.speechStarted = true
-                        _state.update { it.copy(liveTranscript = cleaned) }
+                        // More words after a likely end: the user is still talking.
+                        val resumed = likelyRequest?.let { !sameWords(it, cleaned) } == true
+                        if (resumed) {
+                            likelyRequest = null
+                            dropHeadStart()
+                        }
+                        _state.update {
+                            it.copy(liveTranscript = cleaned, phase = if (resumed && it.phase == AssistantPhase.Thinking) AssistantPhase.Hearing else it.phase)
+                        }
                         return@post
                     }
                     clock.transcriptionMs = transcriptionMs
                     clock.speechSessionMs = SystemClock.elapsedRealtime() - clock.startedAt
-                    finishListening()
+                    finishListening(keepHeadStart = true)
                     when {
                         confirmation != null -> answerByVoice(cleaned, confirmation)
                         // Only "Hey Wakey" was heard (the user paused): keep listening for the request once.
@@ -527,7 +549,27 @@ class AssistantController(
                         cleaned.isBlank() -> reportProblem("I didn't catch that.", speak = source == InputSource.WakeWord)
                         else -> handleUtterance(cleaned, source, languages)
                     }
+                    // The request has taken over a head start for its words, if it could use one.
+                    dropHeadStart()
                 }
+
+            // Flux thinks the request is complete: show that Wakey is on it and let the agent start.
+            // Only the final transcript ends the turn, so going on talking just returns to listening.
+            override fun onEndLikely(transcript: String) = post(token) {
+                if (checkToken == token || confirmation != null) return@post
+                val cleaned = stripWakePhrase(transcript, stripPhrase)
+                if (cleaned.isBlank()) return@post
+                likelyRequest = cleaned
+                _state.update { if (it.phase == AssistantPhase.Hearing) it.copy(phase = AssistantPhase.Thinking, liveTranscript = cleaned) else it }
+                startHeadStart(cleaned, clock)
+            }
+
+            override fun onTurnResumed() = post(token) {
+                if (likelyRequest == null) return@post
+                likelyRequest = null
+                dropHeadStart()
+                _state.update { if (it.phase == AssistantPhase.Thinking) it.copy(phase = AssistantPhase.Hearing) else it }
+            }
 
             override fun onError(error: SttError) = post(token) {
                 if (checkToken == token) {
@@ -545,7 +587,6 @@ class AssistantController(
             }
         }
         val newSession = try {
-            val stripPhrase = if (s.wakeMode == WakeMode.HeyCommand) HEY_STRIP else s.wakePhrase
             val config = SttConfig(
                 model = s.sttModel,
                 languageHints = s.languageMode.hints,
@@ -568,7 +609,7 @@ class AssistantController(
             if (!check) reportProblem("Could not use the microphone: ${e.message}")
             return null
         }
-        if (!check) prewarmReplyVoice()
+        if (!check) warmUp()
         listenWatchdog?.cancel()
         listenWatchdog = scope.launch { watchSession(newSession, clock, confirmation != null) }
         return newSession
@@ -612,8 +653,12 @@ class AssistantController(
         scope.launch { if (token == sessionToken) block() }
     }
 
-    /** Stop streaming audio; the STT session closes itself after a final transcript. */
-    private fun finishListening() {
+    /**
+     * Stop streaming audio; the STT session closes itself after a final transcript. A head start is
+     * dropped unless [keepHeadStart]: the final transcript hands it to the request it heard.
+     */
+    private fun finishListening(keepHeadStart: Boolean = false) {
+        if (!keepHeadStart) dropHeadStart()
         checkToken = NO_CHECK
         listenWatchdog?.cancel()
         listenWatchdog = null
@@ -691,6 +736,10 @@ class AssistantController(
     private fun runTask(task: WakeyTask, languages: List<String>, clock: TurnClock, source: InputSource? = null) {
         val deferred = source == InputSource.Queued || source == InputSource.Scheduled
         val requestEntry = _state.value.entries.lastOrNull { it.speaker == Speaker.User }?.id
+        // Started on Flux's likely end of turn for these same words: this task takes it over. Any
+        // other task may change the screen the head start has read, so that drops it.
+        val early = headStart?.takeIf { source == null && sameWords(it.goal, task.text) }
+        if (early != null) headStart = null else dropHeadStart()
         val job = scope.launch {
             activeTaskId = task.id
             var reply: String
@@ -702,10 +751,7 @@ class AssistantController(
                         taskEntryId = requestEntry, taskRunning = true,
                     )
                 }
-                // A garbled app name ("u two colo") is better handled by the agent than a "no such app" reply.
-                val fast = FastCommandRouter.route(task.text)?.takeUnless {
-                    it is FastCommand.OpenApp && secrets.has(SecretKind.LlmApiKey) && !device.canOpen(it.appName)
-                }
+                val fast = fastCommandFor(task.text)
                 if (fast != null) {
                     clock.route = "fast"
                     val info = AgentActionInfo(1, 1, describe(fast), "fast_command")
@@ -722,7 +768,13 @@ class AssistantController(
                     isError = true
                 } else {
                     clock.route = "agent"
-                    val result = agent.run(task.text, agentListener(clock, withHistory = source != InputSource.Scheduled), deferred)
+                    val result = if (early != null) {
+                        clock.headStartMs = clock.requestAt - early.startedAt
+                        early.goAhead.complete(Unit)
+                        early.run.await()
+                    } else {
+                        agent.run(task.text, agentListener(clock, withHistory = source != InputSource.Scheduled), deferred)
+                    }
                     clock.steps = result.steps
                     clock.llmCalls = result.llmCalls
                     clock.decisionCalls = result.decisionCalls
@@ -755,11 +807,54 @@ class AssistantController(
         }
         taskJob = job
         job.invokeOnCompletion {
+            // A direct command, or a stop, leaves the head start unused.
+            early?.cancel()
             scope.launch {
                 if (taskJob === job) taskJob = null
                 runNextIfIdle()
             }
         }
+    }
+
+    /** The direct Android command for [text], unless the agent should handle it. */
+    private suspend fun fastCommandFor(text: String): FastCommand? =
+        // A garbled app name ("u two colo") is better handled by the agent than a "no such app" reply.
+        FastCommandRouter.route(text)?.takeUnless {
+            it is FastCommand.OpenApp && secrets.has(SecretKind.LlmApiKey) && !device.canOpen(it.appName)
+        }
+
+    /**
+     * An agent run started when Flux said the request was probably complete, before the final
+     * transcript: it reads the screen and asks the model meanwhile, and waits before its first
+     * action. The final transcript takes it over when it has the same words; otherwise it is dropped.
+     */
+    private class HeadStart(val goal: String, val startedAt: Long, val goAhead: CompletableDeferred<Unit>, val run: Deferred<AgentResult>) {
+        fun cancel() = run.cancel()
+    }
+
+    /** On a likely end of turn, starts the agent on [text] when that is where the request will go. */
+    private fun startHeadStart(text: String, clock: TurnClock) {
+        val goal = when (val request = TaskParser.parse(text, now())) {
+            is TaskRequest.Now -> request.text
+            is TaskRequest.AfterCurrent -> request.text
+            else -> null
+        }
+        if (goal != null && headStart?.let { sameWords(it.goal, goal) } == true) return
+        dropHeadStart()
+        // Only when the request will surely run the agent at once, with nothing on screen changing.
+        if (goal == null || isStopPhrase(text) || taskJob?.isActive == true || !secrets.has(SecretKind.LlmApiKey)) return
+        val goAhead = CompletableDeferred<Unit>()
+        val listener = agentListener(clock, withHistory = true, requestShown = false)
+        headStart = HeadStart(goal, SystemClock.elapsedRealtime(), goAhead, scope.async {
+            // A direct command (the flashlight, an installed app) runs without the agent.
+            if (fastCommandFor(goal) != null) awaitCancellation()
+            agent.run(goal, listener) { goAhead.await() }
+        })
+    }
+
+    private fun dropHeadStart() {
+        headStart?.cancel()
+        headStart = null
     }
 
     /** The work of [taskId] is over (its reply may still be spoken), unless another task took over. */
@@ -953,7 +1048,8 @@ class AssistantController(
         }
     }
 
-    private fun agentListener(clock: TurnClock, withHistory: Boolean) = object : AgentListener {
+    /** [requestShown]: the request is already the conversation's last entry, which the history leaves out. */
+    private fun agentListener(clock: TurnClock, withHistory: Boolean, requestShown: Boolean = true) = object : AgentListener {
         override fun onAction(action: AgentActionInfo) {
             if (action.result == null && action.toolName !in PASSIVE_TOOLS && clock.firstActionAt == null) {
                 clock.firstActionAt = SystemClock.elapsedRealtime()
@@ -979,7 +1075,7 @@ class AssistantController(
         override fun history(): List<Pair<String, String>> = if (!withHistory) {
             emptyList()
         } else {
-            _state.value.entries.dropLast(1).filter { it.speaker != Speaker.System }.takeLast(8)
+            _state.value.entries.dropLast(if (requestShown) 1 else 0).filter { it.speaker != Speaker.System }.takeLast(8)
                 .map { (if (it.speaker == Speaker.User) "user" else "assistant") to it.text }
         }
 
@@ -1195,7 +1291,7 @@ class AssistantController(
 
     /** Biases Flux toward the wake phrase and the words simple commands depend on. */
     private fun keyterms(s: WakeySettings): List<String> =
-        (listOf("Wakey") + s.wakePhrase.split(' ').filter { it.length > 3 } + COMMAND_KEYTERMS).distinct().take(MAX_KEYTERMS)
+        (listOf("Wakey") + s.spokenWake.split(' ').filter { it.length > 3 } + COMMAND_KEYTERMS).distinct().take(MAX_KEYTERMS)
 
     private fun describe(command: FastCommand) = when (command) {
         is FastCommand.Torch -> if (command.on) "Turning the flashlight on" else "Turning the flashlight off"
@@ -1212,6 +1308,8 @@ class AssistantController(
         var speechStarted = false
         var lastEventAt: Long = startedAt
         var requestAt: Long = startedAt
+        /** How long before [requestAt] the agent started on Flux's likely end of turn. */
+        var headStartMs: Long? = null
         var firstActionAt: Long? = null
         var replyStartAt: Long? = null
         var doneAt: Long? = null
@@ -1229,6 +1327,7 @@ class AssistantController(
             sttConnectMs = sttConnectMs,
             transcriptionMs = transcriptionMs,
             speechSessionMs = speechSessionMs,
+            headStartMs = headStartMs,
             firstActionMs = firstActionAt?.let { it - requestAt },
             spokenReplyMs = replyStartAt?.let { it - requestAt },
             totalMs = doneAt?.let { it - requestAt },
@@ -1254,6 +1353,8 @@ class AssistantController(
 
         /** The wake chime and its echo, which the mic boost shouldn't learn from. */
         private const val CHIME_HOLD_MS = 500L
+
+        private const val FLOATING_BUTTON_ON = "Floating button on. You'll see it over your other apps, not inside Wakey."
         private const val MAX_HEARD_CHARS = 80
         internal const val MIC_MUTED_MESSAGE =
             "Android is muting Wakey's microphone. Turn on “Microphone access” in quick settings; " +
@@ -1287,6 +1388,13 @@ class AssistantController(
         private val NO_WORDS = listOf(
             "no", "nope", "don't", "do not", "cancel", "stop", "nahi", "nahin", "mat karo", "नहीं", "मत करो", "रुको",
         )
+
+        /** Whether two transcripts say the same words, whatever their case and punctuation. */
+        internal fun sameWords(a: String, b: String): Boolean = words(a) == words(b)
+
+        private fun words(text: String) = text.lowercase().split(NOT_WORD).filter { it.isNotEmpty() }
+
+        private val NOT_WORD = Regex("[^\\p{L}\\p{N}\\p{M}]+")
 
         internal fun isStopPhrase(text: String): Boolean =
             text.lowercase().trim(' ', '.', '!', '?', '।', ',') in STOP_PHRASES

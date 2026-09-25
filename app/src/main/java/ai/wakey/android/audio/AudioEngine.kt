@@ -1,8 +1,12 @@
 package ai.wakey.android.audio
 
+import ai.wakey.android.config.WakeMode
+import ai.wakey.android.wake.EncodedKeyword
 import ai.wakey.android.wake.KeywordEncoder
 import ai.wakey.android.wake.KeywordEncodingException
+import ai.wakey.android.wake.OpenWakeWordDetector
 import ai.wakey.android.wake.SherpaWakeWordDetector
+import ai.wakey.android.wake.WakeWordDetector
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -90,36 +94,55 @@ class AudioEngine(private val context: Context, private val boostEnabled: () -> 
     private val router = CaptureRouter(SystemClock::elapsedRealtime) { message, error -> Log.w(TAG, message, error) }
     private var encoder: KeywordEncoder? = null
     private var detector: SherpaWakeWordDetector? = null
+    private var jarvis: OpenWakeWordDetector? = null
     private var capture: Capture? = null
 
+    /** The detector wake listening feeds now, and where its detections go. */
+    private var activeDetector: WakeWordDetector? = null
+    private var onWake: ((WakeEvent) -> Unit)? = null
+
     /**
-     * Starts capture + detection of [phrase], or of the word "hey" when [hey] is set (every detection
-     * then needs a check). Throws [IllegalStateException] with a readable message on failure.
+     * Starts capture + detection for [mode]: [phrase] with the phrase spotter, the word "hey" with it
+     * (every detection then needs a check), or openWakeWord's "Hey Jarvis" model. Throws
+     * [IllegalStateException] with a readable message on failure.
      */
     @Synchronized
-    fun startWakeListening(phrase: String, sensitivity: Float, hey: Boolean, onWake: (WakeEvent) -> Unit) {
-        val keyword = try {
-            keywordFor(phrase, hey)
-        } catch (e: KeywordEncodingException) {
-            throw IllegalStateException(e.message, e)
-        }
-        val detector = detector ?: SherpaWakeWordDetector.load(context.assets).also { detector = it }
+    fun startWakeListening(phrase: String, sensitivity: Float, mode: WakeMode, onWake: (WakeEvent) -> Unit) {
+        val (target, keyword) = detectorFor(phrase, mode)
         openMic()
-        router.enableWake(detector, keyword, sensitivity, onWake)
+        this.onWake = onWake
+        activeDetector = target
+        router.enableWake(target, keyword, sensitivity, onWake)
         _wakeListening.value = true
     }
 
     /**
-     * Rebuilds the keyword graph if wake listening is running.
-     * @throws KeywordEncodingException if the phrase can't be used.
+     * Applies a new phrase, sensitivity or mode if wake listening is running, switching detectors
+     * when the mode needs the other one. Throws [IllegalStateException] with a readable message.
      */
     @Synchronized
-    fun updateWakePhrase(phrase: String, sensitivity: Float, hey: Boolean) {
+    fun updateWakePhrase(phrase: String, sensitivity: Float, mode: WakeMode) {
         if (!_wakeListening.value) return
-        router.updateKeyword(keywordFor(phrase, hey), sensitivity)
+        val (target, keyword) = detectorFor(phrase, mode)
+        if (target === activeDetector) {
+            router.updateKeyword(keyword, sensitivity)
+        } else {
+            activeDetector = target
+            router.enableWake(target, keyword, sensitivity, onWake ?: return)
+        }
     }
 
-    private fun keywordFor(phrase: String, hey: Boolean) = if (hey) encoder().encodeHey() else encoder().encode(phrase)
+    private fun detectorFor(phrase: String, mode: WakeMode): Pair<WakeWordDetector, EncodedKeyword> =
+        if (mode == WakeMode.Jarvis) {
+            (jarvis ?: OpenWakeWordDetector.load(context.assets).also { jarvis = it }) to OpenWakeWordDetector.KEYWORD
+        } else {
+            val keyword = try {
+                if (mode == WakeMode.HeyCommand) encoder().encodeHey() else encoder().encode(phrase)
+            } catch (e: KeywordEncodingException) {
+                throw IllegalStateException(e.message, e)
+            }
+            (detector ?: SherpaWakeWordDetector.load(context.assets).also { detector = it }) to keyword
+        }
 
     @Synchronized
     fun stopWakeListening() {
@@ -153,6 +176,9 @@ class AudioEngine(private val context: Context, private val boostEnabled: () -> 
         closeMic()
         detector?.close()
         detector = null
+        jarvis?.close()
+        jarvis = null
+        activeDetector = null
     }
 
     /** Holds the boost for [ms], e.g. while the wake chime plays into the microphone. */

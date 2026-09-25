@@ -38,6 +38,7 @@ internal fun formatTimingSummary(t: TurnTimings): String = buildList {
     t.wakeDetectionMs?.let { add("wake ${formatDuration(it)}") }
     t.sttConnectMs?.let { add("STT connect ${formatDuration(it)}") }
     t.transcriptionMs?.let { add("transcript ${formatDuration(it)}") }
+    t.headStartMs?.let { add("head start ${formatDuration(it)}") }
     t.firstActionMs?.let { add("first action ${formatDuration(it)}") }
     t.spokenReplyMs?.let { add("voice ${formatDuration(it)}") }
     if (t.steps > 0) add(plural(t.steps, "step", "steps"))
@@ -57,6 +58,7 @@ internal fun timingDetails(t: TurnTimings): List<Pair<String, String>> {
         "STT connect" to ms(t.sttConnectMs),
         "Final transcript" to ms(t.transcriptionMs),
         "Speech session" to ms(t.speechSessionMs),
+        "Agent head start" to ms(t.headStartMs),
         "First action" to ms(t.firstActionMs),
         "Reply audio starts" to ms(t.spokenReplyMs),
         "Total" to ms(t.totalMs),

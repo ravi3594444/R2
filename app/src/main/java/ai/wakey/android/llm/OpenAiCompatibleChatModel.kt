@@ -45,6 +45,7 @@ class OpenAiCompatibleChatModel internal constructor(
     ) : this(http, baseUrl, model, apiKey, CALL_TIMEOUT_MS, RETRY_DELAY_MS)
 
     private val client = http.newBuilder().callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS).build()
+    private val warmer = ConnectionWarmer(client)
 
     /** Endpoint + model pairs that rejected `reasoning_effort`; later requests to them omit it. */
     private val noReasoningEffort: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -66,6 +67,12 @@ class OpenAiCompatibleChatModel internal constructor(
         }
         val latencyMs = (System.nanoTime() - started) / 1_000_000
         return withContext(Dispatchers.Default) { ChatJson.parseResponse(body, latencyMs) }
+    }
+
+    override fun warmUp() {
+        val key = apiKey()?.trim().orEmpty()
+        if (key.isEmpty()) return
+        warmer.warm((baseUrl().trim().trimEnd('/') + "/models").toHttpUrlOrNull(), mapOf("Authorization" to "Bearer $key"))
     }
 
     override suspend fun testConnection(): String {

@@ -223,6 +223,7 @@ internal fun WakeyDashboard(
                                 wakeWordOn = state.wakeWordEnabled,
                                 onWakeListeningChange = actions.setWakeListening,
                                 screenControl = setupStatus.screenControl,
+                                screenControlRunning = setupStatus.screenControlRunning,
                                 onFloatingButtonChange = actions.setFloatingButton,
                                 voiceLabel = voiceLabel,
                                 speaking = speaking,
@@ -299,6 +300,7 @@ private fun QuickControlsCard(
     wakeWordOn: Boolean,
     onWakeListeningChange: (Boolean) -> Unit,
     screenControl: Boolean,
+    screenControlRunning: Boolean,
     onFloatingButtonChange: (Boolean) -> Unit,
     voiceLabel: String,
     speaking: Boolean,
@@ -321,7 +323,7 @@ private fun QuickControlsCard(
             )
             SwitchRow(
                 title = "Floating Wakey button",
-                subtitle = floatingButtonNote(settings.floatingButton, screenControl),
+                subtitle = floatingButtonNote(settings.floatingButton, screenControl, screenControlRunning),
                 checked = settings.floatingButton,
                 onCheckedChange = onFloatingButtonChange,
             )
@@ -341,9 +343,12 @@ private fun QuickControlsCard(
     }
 }
 
-internal fun floatingButtonNote(enabled: Boolean, screenControl: Boolean): String = when {
+/** [running]: the screen control service is connected, which is what draws the button. */
+internal fun floatingButtonNote(enabled: Boolean, screenControl: Boolean, running: Boolean = true): String = when {
     enabled && !screenControl -> "Turn on Wakey screen control to show it."
-    else -> "Tap it in any app to talk, no wake word needed. Hold it to see your tasks."
+    enabled && !running -> "Screen control is on but not running. Turn Wakey off and on again in Settings › Accessibility."
+    enabled -> "On: it shows over your other apps, not inside Wakey. Tap it to talk, no wake word needed; hold it to see your tasks."
+    else -> "A small button over your other apps. Tap it to talk, no wake word needed; hold it to see your tasks."
 }
 
 /**

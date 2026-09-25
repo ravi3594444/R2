@@ -33,7 +33,7 @@ fun FloatingButtonSection(controller: AssistantController, settings: WakeySettin
     ) {
         SwitchRow(
             title = "Show the floating button",
-            subtitle = floatingButtonNote(settings.floatingButton, setup.status.screenControl),
+            subtitle = floatingButtonNote(settings.floatingButton, setup.status.screenControl, setup.status.screenControlRunning),
             checked = settings.floatingButton,
             onCheckedChange = { enabled ->
                 if (enabled) {

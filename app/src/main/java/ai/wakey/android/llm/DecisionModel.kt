@@ -11,6 +11,9 @@ interface DecisionModel {
 
     /** A tiny bounded request that checks endpoint and key. Returns a readable summary. */
     suspend fun testConnection(): String
+
+    /** Opens the connection ahead of a decision, in the background, so the decision doesn't wait for it. */
+    fun warmUp() {}
 }
 
 data class Decision(

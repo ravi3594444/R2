@@ -317,6 +317,11 @@ internal class FluxSession(
             lastPartial = info.transcript
             notify { onTranscript(info.transcript, isFinal = false, languages = info.languages) }
         }
+        when (info.event) {
+            TurnEvent.EagerEndOfTurn -> if (info.transcript.isNotBlank()) notify { onEndLikely(info.transcript) }
+            TurnEvent.TurnResumed -> notify { onTurnResumed() }
+            else -> Unit
+        }
     }
 
     /**

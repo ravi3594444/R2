@@ -43,6 +43,8 @@ data class TurnTimings(
     val transcriptionMs: Long? = null,
     /** Stream opened → final transcript (includes the user's speaking time). */
     val speechSessionMs: Long? = null,
+    /** The agent started this long before the final transcript, when Flux said the turn was probably over. */
+    val headStartMs: Long? = null,
     /** Final transcript (or typed submit) → first Android action executed. */
     val firstActionMs: Long? = null,
     /** Final transcript (or typed submit) → reply audio started. */
