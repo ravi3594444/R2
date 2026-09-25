@@ -50,6 +50,8 @@ data class WakeySettings(
     val wakeListeningWanted: Boolean = false,
     /** A short chime when the wake phrase is heard. */
     val wakeSound: Boolean = true,
+    /** Raise quiet speech before the wake word detector and speech recognition hear it. */
+    val micBoost: Boolean = true,
     /** Show the floating Wakey button over other apps (needs Wakey screen control). */
     val floatingButton: Boolean = false,
 ) {

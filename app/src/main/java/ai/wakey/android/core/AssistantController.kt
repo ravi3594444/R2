@@ -129,6 +129,9 @@ class AssistantController(
 
     /** See [AudioEngine.micMuted]. */
     val micMuted: StateFlow<Boolean> get() = audio.micMuted
+
+    /** See [AudioEngine.boostDb]. */
+    val micBoostDb: StateFlow<Int> get() = audio.boostDb
     @Volatile private var keywordEncoder: KeywordEncoder? = null
 
     /** Set while the floating button waits for the voice service to start; times out into opening Wakey. */
@@ -145,6 +148,10 @@ class AssistantController(
 
     init {
         scope.launch { audio.level.collect { level -> _state.update { it.copy(micLevel = level) } } }
+        // Wakey's own voice in the microphone must not teach the mic boost that the room is loud.
+        scope.launch {
+            _state.map { it.phase == AssistantPhase.Speaking }.distinctUntilChanged().collect { audio.holdBoost = it }
+        }
         scope.launch {
             settingsRepo.settings.map { Triple(it.wakeMode, it.wakePhrase, it.wakeSensitivity) }.distinctUntilChanged().drop(1)
                 .collect { (mode, phrase, sensitivity) ->
@@ -339,7 +346,9 @@ class AssistantController(
     private fun checkTimeoutMs() = if (settingsRepo.current.wakeMode == WakeMode.HeyCommand) HEY_CHECK_TIMEOUT_MS else CHECK_TIMEOUT_MS
 
     private fun playWakeSound() {
-        if (settingsRepo.current.wakeSound) chime.play()
+        if (!settingsRepo.current.wakeSound) return
+        audio.holdBoostFor(CHIME_HOLD_MS)
+        chime.play()
     }
 
     /** Drops an unconfirmed wake check so a tap or the assistant gesture can use the microphone. */
@@ -1242,6 +1251,9 @@ class AssistantController(
         /** Stripped from "hey" requests; people used to the old phrase may still say "Hey Wakey". */
         private const val HEY_STRIP = "Hey Wakey"
         private const val NO_CHECK = -1L
+
+        /** The wake chime and its echo, which the mic boost shouldn't learn from. */
+        private const val CHIME_HOLD_MS = 500L
         private const val MAX_HEARD_CHARS = 80
         internal const val MIC_MUTED_MESSAGE =
             "Android is muting Wakey's microphone. Turn on “Microphone access” in quick settings; " +

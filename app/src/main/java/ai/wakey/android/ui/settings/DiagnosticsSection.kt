@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun DiagnosticsSection(controller: AssistantController, state: AssistantUiState, settings: WakeySettings) {
     val stats by controller.wakeStats.collectAsStateWithLifecycle()
     val micMuted by controller.micMuted.collectAsStateWithLifecycle()
+    val micBoostDb by controller.micBoostDb.collectAsStateWithLifecycle()
     SectionCard("Diagnostics", icon = Icons.Rounded.Speed, subtitle = "Timings for the last request, measured on this phone.") {
         val timings = state.lastTimings
         if (timings == null) {
@@ -60,13 +61,18 @@ fun DiagnosticsSection(controller: AssistantController, state: AssistantUiState,
                     state.wakeWordEnabled || state.phase == AssistantPhase.Hearing -> "Listening"
                     else -> "Ready for the floating button"
                 },
+                "Microphone boost" to when {
+                    !settings.micBoost -> "Off"
+                    micBoostDb > 0 -> "+$micBoostDb dB"
+                    else -> "On"
+                },
             ),
         )
         val context = LocalContext.current
         val clipboard = LocalClipboardManager.current
         var copied by remember { mutableStateOf(false) }
         OutlinedButton(onClick = {
-            clipboard.setText(AnnotatedString(diagnosticsReport(context, settings, state, stats, micMuted)))
+            clipboard.setText(AnnotatedString(diagnosticsReport(context, settings, state, stats, micMuted, micBoostDb)))
             copied = true
         }) {
             Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))

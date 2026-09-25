@@ -16,6 +16,7 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.roundToInt
 
 /** Fired on the audio thread when the wake phrase is detected on device. */
 data class WakeEvent(
@@ -41,10 +42,13 @@ data class WakeEvent(
  * If the microphone fails while open (e.g. the audio server restarted after a phone call), the engine
  * reopens it in the background with growing delays and reports a lasting failure in [micProblem].
  *
+ * While [boostEnabled] says so, quiet speech is raised by [SpeechGain] before the detector, the level
+ * meter or the sink hear it, so nobody has to talk loudly on a phone with a quiet microphone.
+ *
  * Public methods are meant for the main thread and are thread-safe. The wake callback and the sink
  * run on the audio thread.
  */
-class AudioEngine(private val context: Context) {
+class AudioEngine(private val context: Context, private val boostEnabled: () -> Boolean = { true }) {
     private val _level = MutableStateFlow(0f)
 
     /** Smoothed microphone loudness 0..1, updated ~15 times a second while the mic is open. */
@@ -68,6 +72,20 @@ class AudioEngine(private val context: Context) {
      * microphone privacy toggle, or no right to record in the background). See [MutedMicDetector].
      */
     val micMuted: StateFlow<Boolean> = _micMuted.asStateFlow()
+
+    private val _boostDb = MutableStateFlow(0)
+
+    /** The boost [SpeechGain] gives the microphone right now, in whole dB; 0 when off, closed or not needed. */
+    val boostDb: StateFlow<Int> = _boostDb.asStateFlow()
+
+    /** Freezes what the boost has learned, e.g. while Wakey talks into its own microphone. */
+    @Volatile var holdBoost = false
+
+    /** Elapsed-realtime ms until which the boost is held, for short sounds like the wake chime. */
+    @Volatile private var holdBoostUntil = 0L
+
+    /** Kept across microphone sessions: a phone's microphone level doesn't change between them. */
+    private val gain = SpeechGain()
 
     private val router = CaptureRouter(SystemClock::elapsedRealtime) { message, error -> Log.w(TAG, message, error) }
     private var encoder: KeywordEncoder? = null
@@ -135,6 +153,11 @@ class AudioEngine(private val context: Context) {
         closeMic()
         detector?.close()
         detector = null
+    }
+
+    /** Holds the boost for [ms], e.g. while the wake chime plays into the microphone. */
+    fun holdBoostFor(ms: Long) {
+        holdBoostUntil = SystemClock.elapsedRealtime() + ms
     }
 
     private fun encoder(): KeywordEncoder = encoder ?: KeywordEncoder.fromAssets(context).also { encoder = it }
@@ -212,6 +235,7 @@ class AudioEngine(private val context: Context) {
         capture?.stop()
         capture = null
         _level.value = 0f
+        _boostDb.value = 0
         _micProblem.value = null
         _micMuted.value = false
     }
@@ -239,8 +263,15 @@ class AudioEngine(private val context: Context) {
             open = ::openRecord,
             onAudio = { buffer, count ->
                 val readAt = SystemClock.elapsedRealtime()
-                meter.add(buffer, count)?.let { _level.value = it }
+                // Muting shows in the raw signal; everything after this hears the boosted one.
                 muteDetector.add(buffer, count)?.let { _micMuted.value = it }
+                _boostDb.value = if (boostEnabled()) {
+                    synchronized(gain) { gain.process(buffer, count, hold = holdBoost || readAt < holdBoostUntil) }
+                    gain.gainDb.roundToInt()
+                } else {
+                    0
+                }
+                meter.add(buffer, count)?.let { _level.value = it }
                 router.onAudio(buffer, count, readAt)
             },
             onReopened = router::onMicOpened,

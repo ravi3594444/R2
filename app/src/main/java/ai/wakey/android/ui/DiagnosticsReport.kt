@@ -34,6 +34,7 @@ internal fun diagnosticsReport(
     state: AssistantUiState,
     stats: WakeStats,
     micMuted: Boolean,
+    micBoostDb: Int = 0,
 ): String {
     fun yes(ok: Boolean) = if (ok) "yes" else "NO"
     val mic = when {
@@ -41,7 +42,7 @@ internal fun diagnosticsReport(
         micMuted -> "MUTED by Android (records silence)"
         // Kept running for the floating button only: the microphone opens when it is tapped.
         !state.wakeWordEnabled && state.phase != AssistantPhase.Hearing -> "closed until the floating button is tapped"
-        else -> "open, level %.2f".format(Locale.US, state.micLevel)
+        else -> "open, level %.2f".format(Locale.US, state.micLevel) + if (micBoostDb > 0) ", boosted +$micBoostDb dB" else ""
     }
     return buildString {
         appendLine("Wakey ${device.appVersion} diagnostics")
@@ -55,6 +56,7 @@ internal fun diagnosticsReport(
         )
         appendLine("Floating button: ${if (settings.floatingButton) "on" else "off"}; exact alarms allowed: ${yes(setup.exactAlarms)}")
         appendLine("Microphone now: $mic")
+        appendLine("Boost a quiet microphone: ${if (settings.micBoost) "on" else "off"}")
         appendLine("Wake: ${settings.wakeMode.label}, phrase “${settings.wakePhrase}”, sensitivity %.2f, wake sound ${if (settings.wakeSound) "on" else "off"}".format(Locale.US, settings.wakeSensitivity))
         appendLine("Since Wakey started: ${stats.wakes} wakes, ${stats.checksConfirmed} confirmed checks, ${stats.checksRejected} dropped checks, mic muted ${stats.mutedEvents} times")
         stats.lastRejectedHeard?.let { appendLine("Last dropped check heard: “$it”") }
@@ -75,5 +77,11 @@ internal fun diagnosticsReport(
     }.trimEnd()
 }
 
-internal fun diagnosticsReport(context: Context, settings: WakeySettings, state: AssistantUiState, stats: WakeStats, micMuted: Boolean) =
-    diagnosticsReport(DeviceFacts.read(), SetupStatus.read(context), settings, state, stats, micMuted)
+internal fun diagnosticsReport(
+    context: Context,
+    settings: WakeySettings,
+    state: AssistantUiState,
+    stats: WakeStats,
+    micMuted: Boolean,
+    micBoostDb: Int,
+) = diagnosticsReport(DeviceFacts.read(), SetupStatus.read(context), settings, state, stats, micMuted, micBoostDb)

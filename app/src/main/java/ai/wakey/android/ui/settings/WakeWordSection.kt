@@ -100,6 +100,12 @@ fun WakeWordSection(controller: AssistantController, settings: WakeySettings) {
         }
         SensitivitySlider(settings.wakeSensitivity) { value -> controller.updateSettings { it.copy(wakeSensitivity = value) } }
         SwitchRow(
+            title = "Boost a quiet microphone",
+            subtitle = "Raises quiet speech automatically, so you can talk normally. Turn it off if Wakey reacts to background noise.",
+            checked = settings.micBoost,
+            onCheckedChange = { on -> controller.updateSettings { it.copy(micBoost = on) } },
+        )
+        SwitchRow(
             title = "Wake sound",
             subtitle = "A short chime when Wakey hears you.",
             checked = settings.wakeSound,

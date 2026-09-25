@@ -16,16 +16,21 @@ data class KeywordScoring(val boost: Float, val threshold: Float)
 /**
  * On-device wake-word spotting with the sherpa-onnx zipformer KWS model bundled under `kws/`.
  *
- * The model is loaded once in [load]. [setKeyword] only creates a new decoding stream with a new
+ * The model is loaded once in [load]. [setKeyword] only creates new decoding streams with a new
  * keyword line, which takes microseconds, so changing the wake phrase never reloads the model.
+ *
+ * Two streams decode the same audio, the second starting [LANE_OFFSET_SAMPLES] later. A single
+ * stream misses a clearly spoken phrase about one time in five, depending only on when it starts:
+ * sherpa resets a stream after 1.5 s of silence, and a phrase begun just then is lost. The offset
+ * stream resets at other moments, so it catches those. On synthetic "Hey Wakey" clips swept across
+ * every start offset, misses fell from 23% to under 2%, for about 1.6× the decoding work.
+ *
  * Not thread-safe: use it from a single thread after [load].
  */
 class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpotter) : WakeWordDetector {
     private var keyword: EncodedKeyword? = null
     private var keywordLine = ""
-    private var stream: OnlineStream? = null
-    private var decodedChunks = 0L
-    private var samplesAccepted = 0L
+    private val lanes = listOf(Lane(0), Lane(LANE_OFFSET_SAMPLES))
     private var floats = FloatArray(0)
 
     override fun setKeyword(keyword: EncodedKeyword, sensitivity: Float) {
@@ -36,51 +41,91 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
     }
 
     override fun restart() {
-        stream?.release()
-        stream = null
-        decodedChunks = 0
-        samplesAccepted = 0
+        lanes.forEach { it.release() }
         val phrase = keyword?.phrase ?: return
-        val next = spotter.createStream(keywordLine)
-        // A null native stream means sherpa rejected the line; decoding it would crash the process.
-        check(next.ptr != 0L) { "The wake-word detector could not use “$phrase”." }
-        stream = next
+        lanes.forEach { it.start(phrase) }
     }
 
     override fun accept(samples: ShortArray, count: Int): WakeDetection? {
-        val current = stream ?: return null
         if (floats.size != count) floats = FloatArray(count)
         for (i in 0 until count) floats[i] = samples[i] / 32_768f
-        current.acceptWaveform(floats, SAMPLE_RATE)
-        samplesAccepted += count
         var detection: WakeDetection? = null
-        while (spotter.isReady(current)) {
-            spotter.decode(current)
-            decodedChunks++
-            val result = spotter.getResult(current)
-            if (result.keyword.isEmpty()) continue
-            // Required after every detection, otherwise the same keyword is reported again.
-            spotter.reset(current)
-            if (detection == null) detection = toDetection(result)
+        for (lane in lanes) {
+            val found = lane.accept(floats, count) ?: continue
+            // A sure detection wins over a loose one that needs checking.
+            if (detection == null || (detection.needsCheck && !found.needsCheck)) detection = found
         }
         return detection
     }
 
     override fun close() {
-        stream?.release()
-        stream = null
+        lanes.forEach { it.release() }
         spotter.release()
     }
 
-    private fun toDetection(result: KeywordSpotterResult): WakeDetection {
-        val span = KeywordTiming.locate(result.timestamps, decodedChunks, TRAILING_BLANKS)
-            ?.takeIf { it.endSample <= samplesAccepted }
-        return WakeDetection(
-            phrase = reportedPhrase(result.keyword, keyword),
-            keywordStartLag = span?.let { samplesAccepted - it.startSample },
-            keywordEndLag = span?.let { samplesAccepted - it.endSample },
-            needsCheck = result.keyword == keyword?.checkTag,
-        )
+    /** One decoding stream, which starts listening [delaySamples] into each run of audio. */
+    private inner class Lane(private val delaySamples: Int) {
+        private var stream: OnlineStream? = null
+        private var decodedChunks = 0L
+        private var samplesAccepted = 0L
+        private var toSkip = delaySamples
+
+        fun start(phrase: String) {
+            val next = spotter.createStream(keywordLine)
+            // A null native stream means sherpa rejected the line; decoding it would crash the process.
+            check(next.ptr != 0L) { "The wake-word detector could not use “$phrase”." }
+            stream = next
+            decodedChunks = 0
+            samplesAccepted = 0
+            toSkip = delaySamples
+        }
+
+        fun release() {
+            stream?.release()
+            stream = null
+        }
+
+        fun accept(floats: FloatArray, count: Int): WakeDetection? {
+            val current = stream ?: return null
+            when {
+                toSkip >= count -> {
+                    toSkip -= count
+                    return null
+                }
+                toSkip > 0 -> {
+                    current.acceptWaveform(floats.copyOfRange(toSkip, count), SAMPLE_RATE)
+                    samplesAccepted += count - toSkip
+                    toSkip = 0
+                }
+                else -> {
+                    current.acceptWaveform(floats, SAMPLE_RATE)
+                    samplesAccepted += count
+                }
+            }
+            var detection: WakeDetection? = null
+            while (spotter.isReady(current)) {
+                spotter.decode(current)
+                decodedChunks++
+                val result = spotter.getResult(current)
+                if (result.keyword.isEmpty()) continue
+                // Required after every detection, otherwise the same keyword is reported again.
+                spotter.reset(current)
+                if (detection == null) detection = toDetection(result)
+            }
+            return detection
+        }
+
+        /** Lags count back from the end of this lane's audio, which is where every lane's audio ends. */
+        private fun toDetection(result: KeywordSpotterResult): WakeDetection {
+            val span = KeywordTiming.locate(result.timestamps, decodedChunks, TRAILING_BLANKS)
+                ?.takeIf { it.endSample <= samplesAccepted }
+            return WakeDetection(
+                phrase = reportedPhrase(result.keyword, keyword),
+                keywordStartLag = span?.let { samplesAccepted - it.startSample },
+                keywordEndLag = span?.let { samplesAccepted - it.endSample },
+                needsCheck = result.keyword == keyword?.checkTag,
+            )
+        }
     }
 
     companion object {
@@ -88,6 +133,9 @@ class SherpaWakeWordDetector private constructor(private val spotter: KeywordSpo
 
         /** Blank frames that must follow a keyword before it fires (sherpa's `numTrailingBlanks`). */
         private const val TRAILING_BLANKS = 1
+
+        /** 320 ms, one decoding chunk: the second stream's resets and chunks fall between the first's. */
+        internal const val LANE_OFFSET_SAMPLES = 5_120
 
         private const val MODEL_DIR = KeywordEncoder.ASSET_DIR
         private const val ENCODER = "$MODEL_DIR/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"

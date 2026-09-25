@@ -94,7 +94,7 @@ class AppGraph(context: Context) {
         .build()
 
     val notifications = Notifications(appContext).apply { ensureChannels() }
-    val audio = AudioEngine(appContext)
+    val audio = AudioEngine(appContext) { settings.current.micBoost }
     val stt = DeepgramFluxStt(http) { secrets.get(SecretKind.DeepgramApiKey) }
     val androidSpeaker = AndroidSpeaker(appContext) { settings.current }
     val deepgramSpeaker = DeepgramSpeaker(http, { secrets.get(SecretKind.DeepgramApiKey) }) { settings.current }
