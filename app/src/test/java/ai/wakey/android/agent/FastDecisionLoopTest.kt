@@ -131,7 +131,7 @@ class FastDecisionLoopTest {
         val listener = RecordingListener(approve = false)
         val model = ScriptedModel.of(toolCall("finish", """{"reply":"Okay, not sent."}"""))
 
-        loop(model, screen, ScriptedDecisions("tap_3" to 0.95)).run("send the message to Priya", listener)
+        loop(model, screen, ScriptedDecisions("tap_3" to 0.95)).run("open the chat with Priya", listener)
 
         assertEquals("Tap “Send” in WhatsApp?", listener.confirmations.single().question)
         assertTrue(screen.log.isEmpty())

@@ -30,8 +30,15 @@ class AgentToolsTest {
     fun rejectsUnknownAndUnavailableTools() {
         assertTrue(error("swipe", "{}").startsWith("Unknown tool \"swipe\""))
         assertTrue(error("tap", """{"element_id":3}""", AgentTools.allowed(ScreenAccess.Unavailable)).contains("not available"))
-        assertEquals(setOf("finish", "ask_user", "schedule_task"), AgentTools.allowed(ScreenAccess.Locked))
-        assertEquals(setOf("finish", "ask_user"), AgentTools.allowed(ScreenAccess.Locked, canSchedule = false))
+        assertEquals(setOf("set_flashlight", "finish", "ask_user", "schedule_task"), AgentTools.allowed(ScreenAccess.Locked))
+        assertEquals(setOf("set_flashlight", "finish", "ask_user"), AgentTools.allowed(ScreenAccess.Locked, canSchedule = false))
+    }
+
+    @Test
+    fun flashlightArguments() {
+        assertEquals(AgentAction.Flashlight(true), valid("set_flashlight", """{"on":true}"""))
+        assertEquals(AgentAction.Flashlight(false), valid("set_flashlight", """{"on":false}"""))
+        assertTrue(error("set_flashlight", "{}").contains("\"on\" is required"))
     }
 
     @Test
@@ -112,6 +119,6 @@ class AgentToolsTest {
             val isAction = spec.name in setOf("open_app", "tap", "enter_text", "scroll", "scroll_to", "tap_point", "go_back", "go_home")
             assertEquals(spec.name, isAction, properties.has("sensitive") && properties.has("reason"))
         }
-        assertEquals(13, AgentTools.specs.size)
+        assertEquals(14, AgentTools.specs.size)
     }
 }

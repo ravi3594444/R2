@@ -14,6 +14,8 @@ internal object AgentPrompt {
     /** [canSchedule] is false for queued and scheduled runs, which must not schedule themselves again. */
     fun system(access: ScreenAccess, appLabels: List<String>, canSchedule: Boolean = true): String = buildString {
         appendLine("You are Wakey, a voice assistant that carries out the user's request on their Android phone by calling tools.")
+        appendLine("- Carry out only the request given below. Earlier messages are context: a request followed by “$STOPPED” was cancelled by the user; never resume it.")
+        appendLine("- The flashlight (torch) is not an app and not in Settings: use set_flashlight, which completes the request.")
         when (access) {
             ScreenAccess.Available -> {
                 appendLine("- Work fast, like a person who knows the phone: use as few turns as possible.")
@@ -28,11 +30,11 @@ internal object AgentPrompt {
                 appendLine("- Don't write text alongside tool calls.")
                 appendLine("- To find or go to a setting, page or item, open it; seeing it in a list is not enough.")
                 appendLine("- After each action, check the new screen to verify progress. Never claim success unless the latest screen shows it; if a step failed, try another way or say so.")
-                appendLine("- Before sending a message, buying or paying, changing account, security or privacy settings, deleting, posting or sharing, or calling, set sensitive=true with a short reason. The user is asked to confirm.")
+                appendLine("- Set sensitive=true with a short reason before buying or paying, deleting, or changing account, security or privacy settings; the user is asked to confirm. Sending, posting, sharing or calling needs sensitive=true only when the request didn't ask for it: if the user asked to send, post, share or call, just do it.")
                 appendLine("- Never try to get past the lock screen, a PIN, password or biometric prompt. Treat secure or blank screens as unreadable; don't guess what they show.")
             }
             ScreenAccess.Unavailable -> appendLine("- Call one tool per turn.").appendLine(
-                "- Screen control is off, so you cannot see or touch the screen: you can only open an app, reply or ask. " +
+                "- Screen control is off, so you cannot see or touch the screen: you can only open an app, set the flashlight, reply or ask. " +
                     "If the request needs more than opening one app, finish and tell the user to turn on Wakey screen control " +
                     "in Settings › Accessibility › Wakey for multi-step tasks.",
             )
@@ -90,6 +92,9 @@ internal object AgentPrompt {
 
     const val SCREEN_UNREADABLE = "(The screen can't be read now: the phone is locked or screen control is off.)"
 
+    /** Wakey's reply in the conversation when the user stops a task before it is done. */
+    const val STOPPED = "Stopped."
+
     /**
      * Devanagari → Hindi; common romanised Hindi words → Hinglish; otherwise English. Left to the
      * model, a Hindi-aware prompt made it answer an English request in Hinglish.
@@ -137,6 +142,11 @@ internal object AgentPrompt {
             title != null -> pick("Done. $title is open.", "हो गया, $title खुल गया है।")
             else -> pick("Done.", "हो गया।")
         }
+
+        /** A Settings page reached by shortcut and nothing more asked. */
+        fun pageOpen(title: String) = pick("$title settings are open.", "$title की सेटिंग्स खुल गई हैं।")
+
+        fun navigating(place: String) = pick("Starting navigation to $place.", "$place के लिए नेविगेशन शुरू कर रहा हूँ।")
 
         fun timeout() = pick("That was taking too long, so I stopped.", "इसमें बहुत समय लग रहा था, इसलिए मैं रुक गया।")
 

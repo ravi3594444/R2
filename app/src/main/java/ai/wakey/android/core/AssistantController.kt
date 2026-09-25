@@ -4,6 +4,7 @@ import ai.wakey.android.WakeyApp
 import ai.wakey.android.accessibility.AccessibilityStatus
 import ai.wakey.android.agent.AgentListener
 import ai.wakey.android.agent.AgentLoop
+import ai.wakey.android.agent.AgentPrompt
 import ai.wakey.android.agent.AgentResult
 import ai.wakey.android.agent.AgentStatus
 import ai.wakey.android.agent.ConfirmationRequest
@@ -693,18 +694,22 @@ class AssistantController(
     private fun handleUtterance(text: String, source: InputSource, languages: List<String>) {
         val clock = turn ?: TurnClock(source, SystemClock.elapsedRealtime(), null)
         clock.requestAt = SystemClock.elapsedRealtime()
-        addEntry(Speaker.User, text, source = source)
         if (isStopPhrase(text)) {
+            addEntry(Speaker.User, text, source = source)
             stop()
             return
         }
         val busy = taskJob?.isActive == true
         val time = now()
-        when (val request = TaskParser.parse(text, time)) {
-            is TaskRequest.Now -> {
-                if (busy) cancelWork()
-                runTask(harness.start(request.text), languages, clock)
-            }
+        val request = TaskParser.parse(text, time)
+        // Another app's ringing alarm (e.g. the Clock app's): the agent can stop it on screen.
+        val stopsOtherAlarm = request is TaskRequest.CancelScheduled && request.ringingOnly && !isRinging()
+        // A request that replaces the running task stops it first, so the conversation shows the
+        // old request as stopped before the new one, and the model never resumes it.
+        if (busy && (request is TaskRequest.Now || stopsOtherAlarm)) cancelWork()
+        addEntry(Speaker.User, text, source = source)
+        when (request) {
+            is TaskRequest.Now -> runTask(harness.start(request.text), languages, clock)
             is TaskRequest.AfterCurrent ->
                 if (busy) {
                     harness.enqueue(request.text)
@@ -718,13 +723,8 @@ class AssistantController(
             }
             TaskRequest.ListTasks -> acknowledge(TaskReplies.list(harness.board.value, time), languages, clock)
             is TaskRequest.CancelScheduled ->
-                if (request.ringingOnly && !isRinging()) {
-                    // Another app's alarm (e.g. the Clock app's): the agent can stop it on screen.
-                    if (busy) cancelWork()
-                    runTask(harness.start(text), languages, clock)
-                } else {
-                    acknowledge(cancelScheduled(request, time), languages, clock)
-                }
+                if (stopsOtherAlarm) runTask(harness.start(text), languages, clock)
+                else acknowledge(cancelScheduled(request, time), languages, clock)
         }
     }
 
@@ -1170,6 +1170,9 @@ class AssistantController(
     }
 
     private fun cancelWork() {
+        // Unfinished work gets a visible end, so the conversation (which the model sees) never
+        // leaves a request hanging that it might pick up again with the next one.
+        if (taskJob?.isActive == true && activeTaskId != null) addEntry(Speaker.Wakey, AgentPrompt.STOPPED)
         pendingConfirm?.complete(false)
         taskJob?.cancel()
         taskJob = null

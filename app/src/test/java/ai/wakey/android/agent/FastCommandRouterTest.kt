@@ -19,6 +19,16 @@ class FastCommandRouterTest {
     )
 
     @Test
+    fun theFlashlightIsNotAnApp() {
+        assertRoutes(
+            FastCommand.Torch(true),
+            "open the flashlight app", "open flashlight app", "launch the torch", "flashlight kholo", "torch khol do",
+            "flashlight open karo", "torch app kholo", "flashlight wala app open karo", "light up the torch",
+        )
+        assertRoutes(FastCommand.Torch(false), "close the flashlight app", "flashlight close karo", "torch stop karo")
+    }
+
+    @Test
     fun torchOffInEnglish() = assertRoutes(
         FastCommand.Torch(false),
         "turn off the flashlight", "turn off flashlight", "turn off the torch", "turn off torch", "torch off",

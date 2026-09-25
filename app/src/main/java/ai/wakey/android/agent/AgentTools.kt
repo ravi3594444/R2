@@ -24,6 +24,9 @@ internal sealed interface AgentAction {
 
     data class OpenApp(val name: String, override val sensitive: Boolean, override val reason: String?) : ScreenChanging
 
+    /** A deep link the loop opens itself (never a model call): see [Shortcuts]. */
+    data class OpenLink(val link: AppLink) : ScreenChanging
+
     data class Tap(
         val target: ElementTarget,
         val element: ScreenElement?,
@@ -60,6 +63,9 @@ internal sealed interface AgentAction {
 
     data class GoBack(override val sensitive: Boolean, override val reason: String?) : ScreenChanging
     data class GoHome(override val sensitive: Boolean, override val reason: String?) : ScreenChanging
+
+    /** The torch: a direct device call that works without the screen, even on the lock screen. */
+    data class Flashlight(val on: Boolean) : AgentAction
     data object ReadScreen : AgentAction
     data object TakeScreenshot : AgentAction
     data class Finish(val reply: String) : AgentAction
@@ -89,6 +95,7 @@ internal object AgentTools {
     const val SCROLL = "scroll"
     const val GO_BACK = "go_back"
     const val GO_HOME = "go_home"
+    const val SET_FLASHLIGHT = "set_flashlight"
     const val TAKE_SCREENSHOT = "take_screenshot"
     const val TAP_POINT = "tap_point"
     const val SCROLL_TO = "scroll_to"
@@ -137,6 +144,11 @@ internal object AgentTools {
         ToolSpec(GO_BACK, "Press the Android Back button.", schema(SAFETY_PROPS)),
         ToolSpec(GO_HOME, "Go to the home screen.", schema(SAFETY_PROPS)),
         ToolSpec(
+            SET_FLASHLIGHT,
+            "Turn the phone's flashlight (torch) on or off. The flashlight is not an app and not in Settings; this completes the request.",
+            schema(""""on":{"type":"boolean"}""", "on"),
+        ),
+        ToolSpec(
             TAKE_SCREENSHOT,
             "Look at a screenshot. Only when the element list lacks what you need (unlabelled icons, images, web content).",
             schema(""),
@@ -166,8 +178,8 @@ internal object AgentTools {
     fun allowed(access: ScreenAccess, canSchedule: Boolean = true): Set<String> {
         val names = when (access) {
             ScreenAccess.Available -> specs.mapTo(LinkedHashSet()) { it.name }
-            ScreenAccess.Unavailable -> linkedSetOf(OPEN_APP, FINISH, ASK_USER, SCHEDULE_TASK)
-            ScreenAccess.Locked -> linkedSetOf(FINISH, ASK_USER, SCHEDULE_TASK)
+            ScreenAccess.Unavailable -> linkedSetOf(OPEN_APP, SET_FLASHLIGHT, FINISH, ASK_USER, SCHEDULE_TASK)
+            ScreenAccess.Locked -> linkedSetOf(SET_FLASHLIGHT, FINISH, ASK_USER, SCHEDULE_TASK)
         }
         if (!canSchedule) names.remove(SCHEDULE_TASK)
         return names
@@ -267,6 +279,7 @@ internal object AgentTools {
             )
             GO_BACK -> AgentAction.GoBack(sensitive, reason)
             GO_HOME -> AgentAction.GoHome(sensitive, reason)
+            SET_FLASHLIGHT -> AgentAction.Flashlight(args.boolean("on") ?: throw InvalidArgument("\"on\" is required: true or false."))
             FINISH -> AgentAction.Finish(args.requiredText("reply").trim())
             ASK_USER -> AgentAction.AskUser(args.requiredText("question").trim())
             SCHEDULE_TASK -> {

@@ -32,7 +32,9 @@ import java.util.UUID
 /** What the agent needs from [DeviceActions], as an interface so the loop can be tested off-device. */
 internal interface AppLauncher {
     suspend fun open(name: String): AppLaunch
+    suspend fun openLink(link: AppLink): AppLaunch
     suspend fun labels(): List<String>
+    suspend fun setTorch(on: Boolean): ActionOutcome
 }
 
 /**
@@ -67,7 +69,9 @@ class AgentLoop internal constructor(
         model = model,
         apps = object : AppLauncher {
             override suspend fun open(name: String) = device.startApp(name)
+            override suspend fun openLink(link: AppLink) = device.openLink(link)
             override suspend fun labels() = withContext(Dispatchers.IO) { device.installedAppLabels() }
+            override suspend fun setTorch(on: Boolean) = device.setTorch(on)
         },
         screen = screen,
         settings = settings,
@@ -172,13 +176,29 @@ class AgentLoop internal constructor(
             observation?.let { first ->
                 addFullScreen(ChatMessage.User("Current screen:\n${AgentPrompt.screen(first)}"), ChatMessage.User(EARLIER_SCREEN))
             }
-            // "Open Instagram and search cats": the first step is known, so run it without a model round trip.
-            OpeningStep.appToOpen(goal)?.takeIf { access == ScreenAccess.Available }?.let { app ->
-                val call = ToolCall(OPENING_CALL_ID, AgentTools.OPEN_APP, JSONObject().put("name", app).toString())
+            // "YouTube pe lofi chalao", "turn on Bluetooth": the screen the request needs is one intent
+            // away, so open it without a model round trip; a search is often complete right there.
+            val shortcut = Shortcuts.forGoal(goal)?.takeIf { access != ScreenAccess.Locked }
+            if (shortcut != null) {
+                val args = JSONObject().put("name", shortcut.link.label).put("link", shortcut.link.uri ?: shortcut.link.action)
+                val call = ToolCall(OPENING_CALL_ID, AgentTools.OPEN_APP, args.toString())
                 messages += ChatMessage.Assistant(null, listOf(call))
                 steps++
                 decider = Decider.Direct
-                act(AgentAction.OpenApp(app, sensitive = false, reason = null), call)?.let { return it }
+                act(AgentAction.OpenLink(shortcut.link), call)?.let { return it }
+                shortcut.done?.takeIf { arrived(shortcut) }?.let { done ->
+                    record("Finish", 0, true)
+                    return result(AgentStatus.Completed, reply(done))
+                }
+            } else {
+                // "Open Instagram and search cats": the first step is known, so run it without a model round trip.
+                OpeningStep.appToOpen(goal)?.takeIf { access == ScreenAccess.Available }?.let { app ->
+                    val call = ToolCall(OPENING_CALL_ID, AgentTools.OPEN_APP, JSONObject().put("name", app).toString())
+                    messages += ChatMessage.Assistant(null, listOf(call))
+                    steps++
+                    decider = Decider.Direct
+                    act(AgentAction.OpenApp(app, sensitive = false, reason = null), call)?.let { return it }
+                }
             }
 
             while (steps < maxSteps) {
@@ -353,6 +373,46 @@ class AgentLoop internal constructor(
             }
         }
 
+        /**
+         * The shortcut's screen is up: its app is in front (when known) and the expected words show.
+         * Web pages load after the browser appears, so one re-read is allowed. Without the screen
+         * (screen control off) a launch that worked has to be trusted.
+         */
+        private suspend fun arrived(shortcut: Shortcut): Boolean {
+            if (lastOutcome?.success != true) return false
+            if (access != ScreenAccess.Available) return observation == null
+            repeat(LINK_READS) { attempt ->
+                val screen = observation ?: return false
+                val inFront = shortcut.link.packageName == null || screen.packageName == shortcut.link.packageName
+                val shown = shortcut.visible.isEmpty() || screen.elements.any { element ->
+                    !element.editable && element.labels().any { label -> shortcut.visible.any { label.contains(it, ignoreCase = true) } }
+                }
+                if (inFront && shown) return true
+                if (attempt < LINK_READS - 1) {
+                    delay(LINK_RETRY_MS)
+                    val controller = screen() ?: return false
+                    val next = settledRead(controller) ?: return false
+                    observation = next
+                    if (next.signature != screen.signature) replaceScreen(next)
+                }
+            }
+            return false
+        }
+
+        /** The screen went on changing after the link's tool result was written: keep the model's copy current. */
+        private fun replaceScreen(screen: ScreenObservation) {
+            if (fullScreenAt != messages.lastIndex) return
+            val last = messages[fullScreenAt] as? ChatMessage.Tool ?: return
+            val line = last.content.substringBefore("\n\n")
+            messages[fullScreenAt] = ChatMessage.Tool(last.toolCallId, last.name, "$line\n\nNew screen:\n${AgentPrompt.screen(screen)}")
+        }
+
+        private fun reply(done: ShortcutDone): String = when (done) {
+            is ShortcutDone.Results -> replies.done(done.query, null)
+            is ShortcutDone.Page -> replies.pageOpen(done.title)
+            is ShortcutDone.Navigation -> replies.navigating(done.place)
+        }
+
         /** The screen's title: its first plain-text element, else the app name. */
         private fun heading(screen: ScreenObservation): String? =
             screen.elements.firstOrNull { !it.clickable && !it.editable && it.label() != null }?.label()?.substringBefore(" – ")
@@ -424,11 +484,25 @@ class AgentLoop internal constructor(
                     messages += ChatMessage.Tool(call.id, call.name, correction)
                 }
                 is AgentAction.AskUser -> return result(AgentStatus.NeedsUser, action.question)
+                is AgentAction.Flashlight -> return flashlight(action, call)
                 is AgentAction.Schedule -> schedule(action, call)
                 AgentAction.ReadScreen -> readScreen(call)
                 AgentAction.TakeScreenshot -> takeScreenshot(call)
                 is AgentAction.ScreenChanging -> return act(action, call)
             }
+            return null
+        }
+
+        /** The torch is a direct device call; when it works, its message is the reply and the run is over. */
+        private suspend fun flashlight(action: AgentAction.Flashlight, call: ToolCall): AgentResult? {
+            val actStart = clock()
+            val info = started(call, if (action.on) "Turning the flashlight on" else "Turning the flashlight off")
+            if (firstActionAt == null) firstActionAt = actStart
+            val outcome = apps.setTorch(action.on)
+            record(info.description, clock() - actStart, outcome.success)
+            listener.onAction(info.copy(result = outcome.message, success = outcome.success))
+            if (outcome.success) return result(AgentStatus.Completed, outcome.message)
+            messages += ChatMessage.Tool(call.id, call.name, outcomeLine(outcome))
             return null
         }
 
@@ -472,7 +546,7 @@ class AgentLoop internal constructor(
         private suspend fun act(action: AgentAction.ScreenChanging, call: ToolCall): AgentResult? {
             awaitGoAhead()
             lastOutcome = null
-            SafetyPolicy.review(action, observation?.appLabel)?.let { request ->
+            SafetyPolicy.review(action, observation?.appLabel, goal)?.let { request ->
                 val approved = listener.confirm(request)
                 currentCoroutineContext().ensureActive()
                 if (!approved) {
@@ -487,6 +561,7 @@ class AgentLoop internal constructor(
             val info = started(call, describe(action))
             if (firstActionAt == null) firstActionAt = actStart
             val before = observation?.signature
+            val beforePackage = observation?.packageName
             val controller = screen()
             val launch = try {
                 execute(action, controller)
@@ -496,7 +571,12 @@ class AgentLoop internal constructor(
                 AppLaunch(ActionOutcome(false, "The action failed (${e.javaClass.simpleName})."))
             }
             val after = controller?.takeIf { !it.isLocked }?.let {
-                launch.packageName?.let { launched -> it.awaitForeground(launched) }
+                val launched = launch.packageName
+                when {
+                    launched != null -> it.awaitForeground(launched)
+                    // A link any app may answer (a web search): wait for whichever one comes up.
+                    action is AgentAction.OpenLink && launch.outcome.success -> it.awaitForegroundChange(beforePackage)
+                }
                 settledRead(it)
             }
             observation = after
@@ -519,6 +599,7 @@ class AgentLoop internal constructor(
         private suspend fun execute(action: AgentAction.ScreenChanging, controller: ScreenController?): AppLaunch =
             when (action) {
                 is AgentAction.OpenApp -> apps.open(action.name)
+                is AgentAction.OpenLink -> apps.openLink(action.link)
                 is AgentAction.Tap -> onScreen(controller) { tap(action.target) }
                 is AgentAction.EnterText -> onScreen(controller) { enterText(action.target, action.text, action.submit) }
                 is AgentAction.Scroll -> onScreen(controller) { scroll(action.direction, action.target) }
@@ -629,6 +710,7 @@ class AgentLoop internal constructor(
 
     private fun describe(action: AgentAction.ScreenChanging): String = when (action) {
         is AgentAction.OpenApp -> "Opening ${action.name}"
+        is AgentAction.OpenLink -> "Opening ${action.link.target}"
         is AgentAction.Tap -> "Tapping “${action.element?.label() ?: action.target.label ?: "item ${action.target.id}"}”"
         is AgentAction.EnterText -> "Typing “${action.text.take(40)}${if (action.text.length > 40) "…" else ""}”"
         is AgentAction.Scroll -> "Scrolling ${action.direction.name.lowercase()}"
@@ -679,6 +761,9 @@ class AgentLoop internal constructor(
         /** Fast decisions per run; beyond this a task isn't routine and the LLM steers. */
         const val MAX_FAST_CALLS = 10
         const val MAX_SCROLL_TO = 8
+        /** Reads of a shortcut's screen before giving up on finishing there: web pages load after the browser shows. */
+        const val LINK_READS = 2
+        const val LINK_RETRY_MS = 900L
         const val MIN_DONE_TEXT = 2
         const val EARLIER_SCREEN = "(The screen at the start; it has changed since.)"
         const val THIN_MIN_CONTROLS = 2

@@ -62,6 +62,42 @@ class SafetyPolicyTest {
     }
 
     @Test
+    fun whatTheRequestAsksForIsNotQuestionedAgain() {
+        assertNull(SafetyPolicy.review(tap("Send"), "WhatsApp", goal = "send a message to Priya saying I'm late"))
+        assertNull(SafetyPolicy.review(tap("Send"), "WhatsApp", goal = "message Priya that I'm running late"))
+        assertNull(SafetyPolicy.review(tap("Send", sensitive = true, reason = "Sends the message"), "WhatsApp", goal = "text dad I'll be home soon"))
+        assertNull(SafetyPolicy.review(tap("Call"), "Phone", goal = "call mum"))
+        assertNull(SafetyPolicy.review(tap("Call", sensitive = true, reason = "Starts a call"), "WhatsApp", goal = "WhatsApp video call Raj"))
+        assertNull(SafetyPolicy.review(tap("Share"), "Photos", goal = "share this photo with dad"))
+        assertNull(SafetyPolicy.review(tap("Post"), "Instagram", goal = "post it on Instagram"))
+        assertNull(SafetyPolicy.review(tap("भेजें"), "WhatsApp", goal = "प्रिया को मैसेज भेजो कि मैं लेट हूँ"))
+        assertNull(SafetyPolicy.review(tap("Send"), "WhatsApp", goal = "Priya ko message bhejo ki main late hoon"))
+        val typed = AgentAction.EnterText("call me when free", ElementTarget(id = 2), element(2, "Message"), submit = true, sensitive = false, reason = null)
+        assertNull(SafetyPolicy.review(typed, "WhatsApp", goal = "message Priya call me when free"))
+    }
+
+    @Test
+    fun moneyDeletingAndTheAccountStillGetOneConfirmation() {
+        assertNotNull(SafetyPolicy.review(tap("Pay ₹500"), "Paytm", goal = "pay 500 rupees to Raj"))
+        assertNotNull(SafetyPolicy.review(tap("Send"), "Google Pay", goal = "send 500 to Raj"))
+        assertNotNull(SafetyPolicy.review(tap("Send money"), "PhonePe", goal = "send money to Raj"))
+        assertNotNull(SafetyPolicy.review(tap("Delete"), "Photos", goal = "delete this photo"))
+        assertNotNull(SafetyPolicy.review(tap("Place order"), "Zomato", goal = "order a pizza"))
+        assertNotNull(SafetyPolicy.review(tap("Sign out"), "Gmail", goal = "sign out of Gmail"))
+        assertNotNull(SafetyPolicy.review(tap("भुगतान करें"), "Paytm", goal = "राज को भुगतान करो"))
+    }
+
+    @Test
+    fun anActionTheRequestDidNotAskForStillAsks() {
+        assertNotNull(SafetyPolicy.review(tap("Send"), "WhatsApp", goal = "open WhatsApp and check messages"))
+        assertNotNull(SafetyPolicy.review(tap("Call"), "Phone", goal = "send a message to mum"))
+        assertNotNull(SafetyPolicy.review(tap("Share"), "Photos", goal = "open the latest photo"))
+        // Flagged by the model for a reason the request doesn't cover.
+        assertNotNull(SafetyPolicy.review(tap("Priya", sensitive = true, reason = "Opens a paid feature"), "App", goal = "message Priya"))
+        assertNotNull(SafetyPolicy.review(tap("Send"), "WhatsApp"))
+    }
+
+    @Test
     fun keywordMatchingUsesWordBoundaries() {
         assertTrue(SafetyPolicy.isConsequential("Tap to pay"))
         assertFalse(SafetyPolicy.isConsequential("Paytm"))

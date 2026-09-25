@@ -116,8 +116,8 @@ android {
         applicationId = "ai.wakey.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.3.5-jev"
+        versionCode = 12
+        versionName = "0.3.6-jev"
         buildConfigField("String", "SEED_FIREWORKS_API_KEY", quoted(""))
         buildConfigField("String", "SEED_DEEPGRAM_API_KEY", quoted(""))
         buildConfigField("String", "SEED_AIMLAPI_API_KEY", quoted(""))

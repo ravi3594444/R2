@@ -64,7 +64,15 @@ internal class FakeScreen(var ui: FakeUi) : ScreenController {
     override val foregroundPackage: String get() = ui.packageName
     override val isLocked: Boolean get() = locked
 
-    override suspend fun observe(maxElements: Int): ScreenObservation = ui.observation().also { latest = it }
+    /** Reads so far, and a hook run before each read (a page that finishes loading, say). */
+    var observations = 0
+    var onObserve: () -> Unit = {}
+
+    override suspend fun observe(maxElements: Int): ScreenObservation {
+        observations++
+        onObserve()
+        return ui.observation().also { latest = it }
+    }
 
     override suspend fun tap(target: ElementTarget): ActionOutcome {
         val tapped = latest.elements.first { it.id == target.id }
@@ -110,7 +118,25 @@ internal class FakeApps(private val screen: FakeScreen?, private val installed: 
         return AppLaunch(ActionOutcome(true, "Opening ${ui.appLabel}."), ui.packageName, ui.appLabel)
     }
 
+    /** Screens reached by deep link, by the link's package (null: whichever browser answers). */
+    val linked = mutableMapOf<String?, FakeUi>()
+    val links = mutableListOf<AppLink>()
+
+    override suspend fun openLink(link: AppLink): AppLaunch {
+        links += link
+        val ui = linked[link.packageName] ?: return AppLaunch(ActionOutcome(false, "I couldn't open ${link.target}."))
+        screen?.ui = ui
+        return AppLaunch(ActionOutcome(true, "Opening ${link.target}."), ui.packageName.takeIf { link.packageName != null }, ui.appLabel)
+    }
+
     override suspend fun labels(): List<String> = installed.values.map { it.appLabel }
+
+    var torch: Boolean? = null
+
+    override suspend fun setTorch(on: Boolean): ActionOutcome {
+        torch = on
+        return ActionOutcome(true, if (on) "Flashlight is on." else "Flashlight is off.")
+    }
 }
 
 /** Answers the n-th request (0-based) with [respond]; records every request. */

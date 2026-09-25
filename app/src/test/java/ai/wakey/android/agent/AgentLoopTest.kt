@@ -96,7 +96,7 @@ class AgentLoopTest {
         screen.onScroll = { screen.ui = settingsMain.copy(items = settingsMain.items + "Page ${++page}") }
         val model = ScriptedModel { _, _ -> toolCall("scroll", """{"direction":"down"}""") }
 
-        val result = agentLoop(model, screen, maxSteps = 4).run("find the developer options", RecordingListener())
+        val result = agentLoop(model, screen, maxSteps = 4).run("scroll to the developer options", RecordingListener())
 
         assertEquals(AgentStatus.StepLimit, result.status)
         assertEquals(4, result.steps)
@@ -129,7 +129,7 @@ class AgentLoopTest {
         lateinit var job: Job
         // The user presses Stop as soon as the first tap has finished.
         listener.onActionHook = { if (it.result != null) job.cancel() }
-        job = launch { agentLoop(model, screen).run("toggle bluetooth", listener) }
+        job = launch { agentLoop(model, screen).run("flip the bluetooth switch", listener) }
         job.join()
 
         assertTrue(job.isCancelled)
@@ -149,7 +149,7 @@ class AgentLoopTest {
                 awaitCancellation()
             }
         }
-        val job = launch { agentLoop(model, screen).run("open bluetooth", RecordingListener()) }
+        val job = launch { agentLoop(model, screen).run("find bluetooth", RecordingListener()) }
         secondCallStarted.await()
         job.cancel()
         job.join()
@@ -168,7 +168,7 @@ class AgentLoopTest {
         val waiting = CompletableDeferred<Unit>()
         val confirmed = CompletableDeferred<Unit>()
         val run = async {
-            agentLoop(model, screen).run("open bluetooth", listener) {
+            agentLoop(model, screen).run("find bluetooth", listener) {
                 waiting.complete(Unit)
                 confirmed.await()
             }
@@ -206,6 +206,137 @@ class AgentLoopTest {
         assertTrue(screen.log.isEmpty())
     }
 
+    private val youTubeResults = FakeUi(
+        "com.google.android.youtube", "YouTube",
+        listOf("Search", "lofi music - relaxing beats", "lofi hip hop radio", "Filters"), texts = setOf("Search"),
+    )
+
+    @Test
+    fun aYouTubeSearchIsOneLinkAndNoModelCall() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, emptyMap()).apply { linked["com.google.android.youtube"] = youTubeResults }
+        val listener = RecordingListener()
+        var now = 5_000L
+
+        val result = agentLoop(ScriptedModel.of(), screen, apps, clock = { now++ }).run("open YouTube and search for lofi music", listener)
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("Here are the results for lofi music.", result.reply)
+        assertEquals(0, result.llmCalls)
+        assertEquals(1, result.steps)
+        assertEquals(5_000L, result.firstActionAtMs)
+        assertEquals("https://www.youtube.com/results?search_query=lofi%20music", apps.links.single().uri)
+        assertTrue(apps.opened.isEmpty())
+        assertEquals(listOf("Opening YouTube results for “lofi music”", "Finish"), result.timeline.map { it.action })
+        assertEquals(Decider.Direct, result.timeline.first().decidedBy)
+        assertEquals(listOf("Opening YouTube results for “lofi music”"), listener.actions.map { it.description }.distinct())
+    }
+
+    @Test
+    fun playingOnYouTubeGoesOnFromTheResults() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, emptyMap()).apply { linked["com.google.android.youtube"] = youTubeResults }
+        val model = ScriptedModel.of(
+            toolCall("tap", """{"element_id":2,"done_reply":"Playing lofi music.","done_if_visible":"lofi music"}"""),
+        )
+        screen.transitions["lofi music - relaxing beats"] = youTubeResults.copy(items = listOf("lofi music - relaxing beats", "Pause"), texts = setOf("lofi music - relaxing beats"))
+
+        val result = agentLoop(model, screen, apps).run("play lofi music on YouTube", RecordingListener())
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("Playing lofi music.", result.reply)
+        assertEquals(1, result.llmCalls)
+        assertEquals(listOf("tap lofi music - relaxing beats"), screen.log)
+        // The model started from the results screen, shown as the link's tool result.
+        val opened = model.requests[0].messages.last() as ChatMessage.Tool
+        assertEquals("open_app", opened.name)
+        assertTrue(opened.content, opened.content.startsWith("OK: Opening YouTube results for “lofi music”."))
+        assertTrue(opened.content.contains("lofi hip hop radio"))
+        val call = (model.requests[0].messages[model.requests[0].messages.lastIndex - 1] as ChatMessage.Assistant).toolCalls.single()
+        assertTrue(call.argumentsJson, call.argumentsJson.contains("search_query=lofi%20music"))
+    }
+
+    @Test
+    fun aSettingsPageOpensDirectlyAndTheModelFlipsTheSwitch() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, mapOf("Settings" to settingsMain)).apply { linked["com.android.settings"] = bluetooth }
+        val model = ScriptedModel.of(
+            toolCall("tap", """{"element_id":2}"""),
+            toolCall("finish", """{"reply":"Bluetooth is on."}"""),
+        )
+        screen.transitions["Use Bluetooth"] = bluetooth
+
+        val result = agentLoop(model, screen, apps).run("turn on Bluetooth", RecordingListener())
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("android.settings.BLUETOOTH_SETTINGS", apps.links.single().action)
+        assertTrue(apps.opened.isEmpty())
+        assertEquals(listOf("tap Use Bluetooth"), screen.log)
+        assertEquals(2, result.llmCalls)
+    }
+
+    @Test
+    fun openingASettingsPageFinishesWhenItShows() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, emptyMap()).apply { linked["com.android.settings"] = bluetooth }
+
+        val result = agentLoop(ScriptedModel.of(), screen, apps).run("open Bluetooth settings", RecordingListener())
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("Bluetooth settings are open.", result.reply)
+        assertEquals(0, result.llmCalls)
+    }
+
+    @Test
+    fun aWebSearchWaitsForThePageThenFinishes() = runTest {
+        val screen = FakeScreen(launcher)
+        val loading = FakeUi("com.android.chrome", "Chrome", listOf("Search or type URL", "Loading…"), texts = setOf("Loading…"))
+        val loaded = FakeUi("com.android.chrome", "Chrome", listOf("Search or type URL", "pizza near me - Google Search", "Domino's Pizza"), texts = setOf("pizza near me - Google Search"))
+        val apps = FakeApps(screen, emptyMap()).apply { linked[null] = loading }
+        screen.onObserve = { if (screen.observations >= 2) screen.ui = loaded }
+
+        val result = agentLoop(ScriptedModel.of(), screen, apps).run("search for pizza near me", RecordingListener())
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("Here are the results for pizza near me.", result.reply)
+        assertEquals(0, result.llmCalls)
+        assertNull(apps.links.single().packageName)
+    }
+
+    @Test
+    fun aLinkThatFailsFallsBackToTheModel() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, mapOf("YouTube" to youTubeResults))
+        val model = ScriptedModel.of(toolCall("finish", """{"reply":"I couldn't open YouTube."}"""))
+
+        val result = agentLoop(model, screen, apps).run("search for lofi on YouTube", RecordingListener())
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals(1, result.llmCalls)
+        val opened = model.requests[0].messages.last() as ChatMessage.Tool
+        assertTrue(opened.content, opened.content.startsWith("FAILED: I couldn't open YouTube results for “lofi”."))
+    }
+
+    @Test
+    fun theFlashlightIsSetDirectlyAndEndsTheRun() = runTest {
+        val screen = FakeScreen(launcher)
+        val apps = FakeApps(screen, mapOf("Settings" to settingsMain))
+        val model = ScriptedModel.of(toolCall("set_flashlight", """{"on":true}"""))
+        val listener = RecordingListener()
+
+        val result = agentLoop(model, screen, apps).run("open the flashlight", listener)
+
+        assertEquals(AgentStatus.Completed, result.status)
+        assertEquals("Flashlight is on.", result.reply)
+        assertEquals(true, apps.torch)
+        assertTrue(apps.opened.isEmpty())
+        assertTrue(screen.log.isEmpty())
+        assertEquals(1, result.llmCalls)
+        assertEquals(listOf("set_flashlight" to null, "set_flashlight" to true), listener.actions.map { it.toolName to it.success })
+        assertEquals(1_000L, result.firstActionAtMs)
+        assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("use set_flashlight"))
+    }
+
     @Test
     fun deniedSendIsNotExecuted() = runTest {
         val screen = FakeScreen(chat)
@@ -215,7 +346,7 @@ class AgentLoopTest {
         )
         val listener = RecordingListener(approve = false)
 
-        val result = agentLoop(model, screen).run("send hi to Priya on WhatsApp", listener)
+        val result = agentLoop(model, screen).run("open the chat with Priya", listener)
 
         assertEquals(AgentStatus.Completed, result.status)
         assertTrue(screen.log.isEmpty())
@@ -233,7 +364,7 @@ class AgentLoopTest {
         val model = ScriptedModel.of(toolCall("tap", """{"element_id":3}"""), toolCall("finish", """{"reply":"Sent."}"""))
         val listener = RecordingListener(approve = true)
 
-        agentLoop(model, screen).run("send hi to Priya on WhatsApp", listener)
+        agentLoop(model, screen).run("open the chat with Priya", listener)
 
         assertEquals(listOf("tap Send"), screen.log)
         assertEquals(1, listener.confirmations.size)
@@ -261,7 +392,7 @@ class AgentLoopTest {
         val screen = FakeScreen(settingsMain)
         val model = ScriptedModel { _, _ -> toolCall("tap", """{"element_id":99}""") }
 
-        val result = agentLoop(model, screen).run("open bluetooth", RecordingListener())
+        val result = agentLoop(model, screen).run("find bluetooth", RecordingListener())
 
         assertEquals(AgentStatus.Failed, result.status)
         assertEquals(3, result.steps)
@@ -293,12 +424,12 @@ class AgentLoopTest {
             toolCall("finish", """{"reply":"I opened Chrome. Turn on Wakey screen control to search for you."}"""),
         )
 
-        val result = agentLoop(model, null, apps).run("open Chrome and search for cats", RecordingListener())
+        val result = agentLoop(model, null, apps).run("open Chrome and read the news", RecordingListener())
 
         assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(listOf("open_app", "finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
+        assertEquals(listOf("open_app", "set_flashlight", "finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
         assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("Screen control is off"))
-        assertEquals("Request: open Chrome and search for cats\nReply language: English\n$TIME_LINE", (model.requests[0].messages.last() as ChatMessage.User).text)
+        assertEquals("Request: open Chrome and read the news\nReply language: English\n$TIME_LINE", (model.requests[0].messages.last() as ChatMessage.User).text)
         assertTrue((model.requests[1].messages.last() as ChatMessage.Tool).content.contains("can't be checked"))
         assertEquals(1_000L, result.firstActionAtMs)
     }
@@ -311,7 +442,7 @@ class AgentLoopTest {
         val result = agentLoop(model, screen).run("open WhatsApp and message mom", RecordingListener())
 
         assertEquals(AgentStatus.Completed, result.status)
-        assertEquals(listOf("finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
+        assertEquals(listOf("set_flashlight", "finish", "ask_user", "schedule_task"), model.requests[0].tools.map { it.name })
         assertTrue((model.requests[0].messages[0] as ChatMessage.System).text.contains("The phone is locked"))
     }
 
@@ -340,7 +471,7 @@ class AgentLoopTest {
         )
         val listener = RecordingListener()
 
-        val result = agentLoop(model, screen).run("open bluetooth", listener)
+        val result = agentLoop(model, screen).run("find bluetooth", listener)
 
         assertEquals(AgentStatus.Completed, result.status)
         val withImage = model.requests[1].messages.last() as ChatMessage.User
@@ -358,7 +489,7 @@ class AgentLoopTest {
         }
         val screen = FakeScreen(settingsMain)
 
-        val result = agentLoop(model, screen, timeoutMs = 120_000).run("open bluetooth", RecordingListener())
+        val result = agentLoop(model, screen, timeoutMs = 120_000).run("find bluetooth", RecordingListener())
 
         assertEquals(AgentStatus.Timeout, result.status)
     }
@@ -366,7 +497,7 @@ class AgentLoopTest {
     @Test
     fun modelErrorsBecomeShortReplies() = runTest {
         val model = ScriptedModel { _, _ -> throw LlmException(LlmException.Kind.Network, "offline") }
-        val result = agentLoop(model, FakeScreen(settingsMain)).run("open bluetooth", RecordingListener())
+        val result = agentLoop(model, FakeScreen(settingsMain)).run("find bluetooth", RecordingListener())
         assertEquals(AgentStatus.Failed, result.status)
         assertTrue(result.reply.contains("internet"))
         assertEquals(0, result.llmCalls)
@@ -445,7 +576,7 @@ class AgentLoopTest {
         }
         val model = ScriptedModel.of(two, toolCall("finish", """{"reply":"Done."}"""))
 
-        agentLoop(model, screen).run("open bluetooth", RecordingListener())
+        agentLoop(model, screen).run("find bluetooth", RecordingListener())
 
         assertEquals(listOf("tap Bluetooth", "home"), screen.log)
         val next = model.requests[1].messages
@@ -596,7 +727,7 @@ class AgentLoopTest {
         val batch = ChatResponseOf(ToolCall("a", "tap", """{"element_id":3}"""), ToolCall("b", "finish", """{"reply":"Done!"}"""))
         val model = ScriptedModel.of(batch, toolCall("finish", """{"reply":"Bluetooth is open."}"""))
 
-        val result = agentLoop(model, screen).run("open bluetooth", RecordingListener())
+        val result = agentLoop(model, screen).run("find bluetooth", RecordingListener())
 
         assertEquals("Bluetooth is open.", result.reply)
         assertEquals(2, result.llmCalls)

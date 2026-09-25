@@ -231,17 +231,21 @@ object FastCommandRouter {
     )
 
     private val TORCH_NOUNS = phrases("flashlight", "flash light", "torch", "torchlight", "torch light", "flash")
-    private val TORCH_ARTICLES = setOf("the", "a", "my", "phone", "ko", "ki", "ka")
+    /** "Open the flashlight app": the torch is not an app, but people ask for it as one. */
+    private val TORCH_ARTICLES = setOf("the", "a", "my", "phone", "ko", "ki", "ka", "app", "application", "wala", "vala")
     private val TORCH_ON = setOf(
-        "on", "turn on", "switch on", "put on", "enable", "activate", "start", "open", "jalao", "jala do", "jala de",
-        "jala", "jalado", "jalaiye", "jala dijiye", "chalao", "chala do", "on karo", "on kar do", "on kar de",
-        "on kardo", "on kar", "on kariye", "on kijiye", "chalu karo", "chalu kar do", "chalu kar de", "chalu kardo",
-        "chalu", "chalu kijiye", "start karo",
+        "on", "turn on", "switch on", "put on", "enable", "activate", "start", "open", "open up", "launch", "light",
+        "light up", "jalao", "jala do", "jala de", "jala", "jalado", "jalaiye", "jala dijiye", "chalao", "chala do",
+        "on karo", "on kar do", "on kar de", "on kardo", "on kar", "on kariye", "on kijiye", "chalu karo",
+        "chalu kar do", "chalu kar de", "chalu kardo", "chalu", "chalu kijiye", "start karo", "kholo", "khol do",
+        "khol de", "khol", "kholiye", "open karo", "open kar do", "open kar de", "open kardo", "open kar",
+        "start kar do",
     )
     private val TORCH_OFF = setOf(
-        "off", "turn off", "turn of", "switch off", "switch of", "disable", "deactivate", "stop", "close",
+        "off", "turn off", "turn of", "switch off", "switch of", "disable", "deactivate", "stop", "close", "shut",
         "band karo", "band kar do", "band kar de", "band kardo", "band kar", "band", "band kijiye", "ban karo",
         "ban kar do", "bujhao", "bujha do", "bujha de", "off karo", "off kar do", "off kar de", "off kardo", "off kar",
+        "close karo", "close kar do", "stop karo",
     )
 
     private val OPEN_PREFIXES = phrases("open", "open up", "launch", "start")

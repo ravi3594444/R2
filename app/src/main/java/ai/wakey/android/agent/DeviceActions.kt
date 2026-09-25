@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,22 @@ class DeviceActions(
         is FastCommand.OpenApp -> openAndVerify(command.appName)
         FastCommand.GoHome -> navigate(home = true)
         FastCommand.GoBack -> navigate(home = false)
+    }
+
+    /**
+     * Starts [link]'s intent in its app; if that app isn't installed, in any app that handles it.
+     * The reported package is the one that should come to the front, null when it isn't known.
+     */
+    internal fun openLink(link: AppLink): AppLaunch {
+        if (isLocked) return AppLaunch(ActionOutcome(false, LOCKED_MESSAGE))
+        if (screen() == null && !appVisible()) return AppLaunch(ActionOutcome(false, BACKGROUND_MESSAGE))
+        val intent = Intent(link.action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        link.uri?.let { intent.data = Uri.parse(it) }
+        if (link.packageName != null && start(Intent(intent).setPackage(link.packageName))) {
+            return AppLaunch(ActionOutcome(true, "Opening ${link.target}."), link.packageName, link.label)
+        }
+        if (!start(intent)) return AppLaunch(ActionOutcome(false, "I couldn't open ${link.target}."))
+        return AppLaunch(ActionOutcome(true, "Opening ${link.target}."), null, link.label)
     }
 
     /** Works on the lock screen too; torch mode needs no CAMERA permission since API 23. */
@@ -183,5 +200,15 @@ internal suspend fun ScreenController.awaitForeground(packageName: String, timeo
     return foregroundPackage == packageName
 }
 
+/** Waits a bounded time for any app other than [from] to reach the foreground. */
+internal suspend fun ScreenController.awaitForegroundChange(from: String?, timeoutMs: Long = FOREGROUND_CHANGE_TIMEOUT_MS): Boolean {
+    repeat((timeoutMs / FOREGROUND_POLL_MS).toInt()) {
+        if (foregroundPackage != null && foregroundPackage != from) return true
+        delay(FOREGROUND_POLL_MS)
+    }
+    return foregroundPackage != null && foregroundPackage != from
+}
+
 private const val FOREGROUND_POLL_MS = 150L
 private const val FOREGROUND_TIMEOUT_MS = 5_000L
+private const val FOREGROUND_CHANGE_TIMEOUT_MS = 3_000L
